@@ -14,6 +14,7 @@ import { watchProvider, usingOwnWatchRpc } from "../chain/client.js";
 import { QUOTER_ABI } from "../chain/abis.js";
 import { dataPath, readJson, writeJson } from "../util/files.js";
 import { logger } from "../util/log.js";
+import { gmgnTrending } from "../radar/gmgn.js";
 import type { SpikeHit, SafetyResult } from "../types.js";
 import type { WatchConfig } from "../config.js";
 
@@ -21,8 +22,7 @@ const log = logger("watch");
 export { usingOwnWatchRpc };
 
 const HIST_FILE = dataPath("watch-history.json");
-const BS = "https://robinhoodchain.blockscout.com";
-const DS = "https://api.dexscreener.com/latest/dex/tokens";
+const DS = "https://api.dexscreener.com/token-pairs/v1/robinhood";
 
 export const wcfg = (): WatchConfig => cfg.watch;
 
@@ -47,44 +47,36 @@ interface MarketRow {
   url: string;
 }
 
-// ── 1. token list from Blockscout (cache 30m) ──
-let tokenCache: { list: Array<{ addr: string; symbol: string }>; at: number } = { list: [], at: 0 };
-async function tokenList(max: number): Promise<Array<{ addr: string; symbol: string }>> {
-  if (Date.now() - tokenCache.at < 30 * 60_000 && tokenCache.list.length) return tokenCache.list;
+// ── 1. recent volume leaders from GMGN ──
+export async function discoverWatchTokens(max: number, trend: typeof gmgnTrending = gmgnTrending): Promise<Array<{ addr: string; symbol: string }>> {
+  const rows = await trend({ interval: "5m", orderBy: "volume", limit: Math.min(max, 100), minVolume: 0, minLiquidity: 0, minMarketCap: 0 });
+  const seen = new Set<string>();
   const out: Array<{ addr: string; symbol: string }> = [];
-  let next: Record<string, string> | null = null;
-  for (let page = 0; page < 10 && out.length < max; page++) {
-    const q = next ? "?" + new URLSearchParams(next).toString() : "?type=ERC-20";
-    const r: any = await fetch(`${BS}/api/v2/tokens${q}`, { signal: AbortSignal.timeout(15_000) })
-      .then((x) => x.json())
-      .catch(() => null);
-    for (const t of r?.items ?? []) {
-      const addr = t.address_hash || t.address;
-      if (addr) out.push({ addr, symbol: t.symbol || "?" });
-    }
-    next = r?.next_page_params ?? null;
-    if (!next) break;
+  for (const row of rows) {
+    const addr = row.address;
+    if (!/^0x[0-9a-f]{40}$/i.test(addr) || seen.has(addr.toLowerCase())) continue;
+    seen.add(addr.toLowerCase());
+    out.push({ addr, symbol: row.symbol || "?" });
   }
-  tokenCache = { list: out.slice(0, max), at: Date.now() };
-  return tokenCache.list;
+  if (!out.length) throw new Error("watch token discovery unavailable: GMGN returned no valid tokens");
+  return out;
 }
 
-// ── 2. market data from DexScreener, batched 30 ──
-async function marketData(addrs: string[]): Promise<Record<string, MarketRow>> {
+// ── 2. market data from DexScreener, one token per response ──
+export async function marketData(addrs: string[], fetcher: typeof fetch = fetch, pause: typeof sleep = sleep): Promise<Record<string, MarketRow>> {
   const out: Record<string, MarketRow> = {};
-  for (let i = 0; i < addrs.length; i += 30) {
-    const chunk = addrs.slice(i, i + 30);
-    const r: any = await fetch(`${DS}/${chunk.join(",")}`, { signal: AbortSignal.timeout(15_000) })
-      .then((x) => x.json())
-      .catch(() => null);
-    for (const p of r?.pairs ?? []) {
+  for (const addr of addrs) {
+    const response = await fetcher(`${DS}/${addr}`, { signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) throw new Error(`DexScreener token lookup HTTP ${response.status}`);
+    const pairs: unknown = await response.json();
+    if (!Array.isArray(pairs)) throw new Error("DexScreener token lookup returned invalid data");
+    for (const p of pairs) {
       if (p.chainId !== "robinhood") continue;
-      const a = p.baseToken?.address;
-      if (!a) continue;
+      if (p.baseToken?.address?.toLowerCase() !== addr.toLowerCase()) continue;
       const liq = Number(p.liquidity?.usd || 0);
-      if (out[a] && out[a]!.liq >= liq) continue; // keep deepest pool per token
-      out[a] = {
-        addr: a,
+      if (out[addr] && out[addr]!.liq >= liq) continue; // keep deepest pool per token
+      out[addr] = {
+        addr,
         symbol: p.baseToken?.symbol || "?",
         vol5m: Number(p.volume?.m5 || 0),
         vol1h: Number(p.volume?.h1 || 0),
@@ -97,7 +89,7 @@ async function marketData(addrs: string[]): Promise<Record<string, MarketRow>> {
         url: p.url || `https://dexscreener.com/robinhood/${p.pairAddress}`,
       };
     }
-    await sleep(250); // polite to the API
+    await pause(350); // below the documented 300 requests/minute limit
   }
   return out;
 }
@@ -147,7 +139,7 @@ function isStable(m: MarketRow): boolean {
 /** Highest current 5m volume (non-stable) — used by /watch to show market context. */
 export async function topVolumeNow(n = 3): Promise<MarketRow[]> {
   const w = wcfg();
-  const toks = await tokenList(w.maxTokens);
+  const toks = await discoverWatchTokens(w.maxTokens);
   const md = await marketData(toks.map((t) => t.addr));
   return Object.values(md)
     .filter((m) => !isStable(m))
@@ -159,7 +151,7 @@ export async function topVolumeNow(n = 3): Promise<MarketRow[]> {
 export async function scanOnce(onLog: (msg: string) => void = () => {}): Promise<SpikeHit[]> {
   const w = wcfg();
   const hist = loadHist();
-  const toks = await tokenList(w.maxTokens);
+  const toks = await discoverWatchTokens(w.maxTokens);
   onLog(`checking ${toks.length} tokens…`);
   const md = await marketData(toks.map((t) => t.addr));
   const now = Date.now();
