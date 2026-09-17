@@ -89,6 +89,139 @@ export interface V4CloseResult {
   sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
 }
 
+export type V4CloseReason = "TP" | "SL" | "TRAIL" | "SESSION" | "OOR" | "VFADE" | "FVLOW" | "manual";
+
+/** Once broadcast is possible the caller must stop automatic retries and reconcile. */
+export class StrictExitError extends Error {
+  constructor(message: string, public readonly broadcastPossible: boolean,
+    public readonly positionBurned: boolean, public readonly txHash?: string) {
+    super(message);
+    this.name = "StrictExitError";
+  }
+}
+
+export interface StrictV4CloseResult {
+  strict: true;
+  completed: true;
+  txHash: string;
+  confirmedBlockNumber: number;
+  sweepHashes: string[];
+  recv0Raw: string;
+  recv1Raw: string;
+  currency0: string;
+  currency1: string;
+}
+
+/**
+ * Dedicated experiment exit. No mark-to-market/HODL ledger, no forfeiture fallback,
+ * no sweeping existing wallet inventory. Caller owns the wallet lock and MUST persist
+ * execution intent before calling, so a crash cannot cause an automatic retry.
+ * Completion proves burn + all received non-ETH/WETH sales, not a particular USD profit.
+ * The caller measures cash before/after at one fixed ETH/USD rate, including gas.
+ */
+export async function closeV4PositionStrict(tokenId: string, _reason?: V4CloseReason, opts?: { beforeBurn?: () => void }): Promise<StrictV4CloseResult> {
+  let broadcastPossible = false;
+  let positionBurned = false;
+  let txHash: string | undefined;
+  try {
+    if (!/^\d+$/.test(tokenId)) throw new Error("Invalid position ID");
+    const w = wallet();
+    // Raw RPC avoids ethers' cached latest block/balance path on this sub-second chain.
+    const block = await provider.send("eth_getBlockByNumber", ["latest", false]);
+    const preflightBlock = Number(BigInt(block?.number ?? "-1"));
+    const observedAt = Number(BigInt(block?.timestamp ?? "-1")) * 1000;
+    if (!Number.isSafeInteger(preflightBlock) || preflightBlock <= 0 || !Number.isSafeInteger(observedAt)
+      || observedAt <= 0 || Date.now() - observedAt > 60_000 || observedAt > Date.now() + 5000) {
+      throw new Error("Fresh valid preflight block required");
+    }
+    const posm = new ethers.Contract(C.v4PositionManager!, V4_POSM_ABI, provider);
+    const [owner, liquidity, poolInfo] = await Promise.all([
+      posm.ownerOf!(tokenId, { blockTag: preflightBlock }), posm.getPositionLiquidity!(tokenId, { blockTag: preflightBlock }),
+      posm.getPoolAndPositionInfo!(tokenId, { blockTag: preflightBlock }),
+    ]);
+    if (String(owner).toLowerCase() !== w.address.toLowerCase()) throw new Error("Position owner mismatch");
+    if (BigInt(liquidity) <= 0n) throw new Error("Position has no liquidity");
+    const [pk] = poolInfo;
+    const c0 = ethers.getAddress(pk.currency0);
+    const c1 = ethers.getAddress(pk.currency1);
+    if (c0 === c1 || ethers.getAddress(pk.hooks) !== ethers.ZeroAddress) throw new Error("Unsupported pool currencies or hook");
+    const meta = async (addr: string) => {
+      const m = addr.toLowerCase() === NATIVE ? { symbol: "ETH", decimals: 18 } : await tokenMeta(addr);
+      if (!Number.isInteger(m.decimals) || m.decimals < 0 || m.decimals > 36 || !m.symbol || m.symbol === "?") {
+        throw new Error("Missing or invalid token metadata");
+      }
+      return m;
+    };
+    await Promise.all([meta(c0), meta(c1)]);
+    const rawBalance = async (addr: string, blockTag?: number): Promise<bigint> => {
+      const value = addr.toLowerCase() === NATIVE ? await provider.getBalance(w.address, blockTag)
+        : await new ethers.Contract(addr, ["function balanceOf(address) view returns (uint256)"], provider).balanceOf!(w.address, blockTag === undefined ? {} : { blockTag });
+      const raw = BigInt(value);
+      if (raw < 0n || raw > ethers.MaxUint256) throw new Error("Invalid raw token balance");
+      return raw;
+    };
+    const currencies = [c0, c1];
+    const before = await Promise.all(currencies.map((addr) => rawBalance(addr, preflightBlock)));
+    const coder = ethers.AbiCoder.defaultAbiCoder();
+    const iface = new ethers.Interface(["function modifyLiquidities(bytes,uint256) payable"]);
+    const burn = coder.encode(["uint256", "uint128", "uint128", "bytes"], [tokenId, 0, 0, "0x"]);
+    const take = coder.encode(["address", "address", "address"], [c0, c1, w.address]);
+    const unlock = coder.encode(["bytes", "bytes[]"], ["0x0311", [burn, take]]);
+    const data = iface.encodeFunctionData("modifyLiquidities", [unlock, Math.floor(Date.now() / 1000 + 600)]);
+    await provider.call({ to: C.v4PositionManager!, data, value: 0n, from: w.address });
+    const gas = await overrides();
+    opts?.beforeBurn?.();
+    broadcastPossible = true; // sendTransaction may throw after a successful submission.
+    const tx = await w.sendTransaction({ to: C.v4PositionManager!, data, value: 0n, ...gas });
+    txHash = tx.hash;
+    const receipt = await waitTx(tx, "v4-strict-close");
+    if (!receipt || receipt.status !== 1) throw new Error("Burn receipt not confirmed successful");
+    const transfer = new ethers.Interface(["event Transfer(address indexed from,address indexed to,uint256 indexed tokenId)"]);
+    positionBurned = receipt.logs.some((entry) => {
+      if (entry.address.toLowerCase() !== C.v4PositionManager!.toLowerCase()) return false;
+      try {
+        const event = transfer.parseLog({ topics: [...entry.topics], data: entry.data });
+        return event?.name === "Transfer" && event.args.from.toLowerCase() === w.address.toLowerCase()
+          && event.args.to === ethers.ZeroAddress && event.args.tokenId === BigInt(tokenId);
+      } catch { return false; }
+    });
+    if (!positionBurned) throw new Error("Confirmed NFT burn event missing");
+    const receiptBlock = (r: ethers.TransactionReceipt | null): number => {
+      if (!r || r.status !== 1 || !Number.isSafeInteger(r.blockNumber) || r.blockNumber <= 0) {
+        throw new Error("Successful receipt with a confirmed block number required");
+      }
+      return r.blockNumber;
+    };
+    let confirmedBlockNumber = receiptBlock(receipt);
+    const after = await Promise.all(currencies.map((addr) => rawBalance(addr, confirmedBlockNumber)));
+    const received = after.map((raw, i) => {
+      if (raw < before[i]! && currencies[i]!.toLowerCase() !== NATIVE) throw new Error("Unexpected token debit during burn");
+      return raw > before[i]! ? raw - before[i]! : 0n;
+    });
+    const sweepHashes: string[] = [];
+    for (let i = 0; i < currencies.length; i++) {
+      const addr = currencies[i]!;
+      const a = addr.toLowerCase();
+      if (a === NATIVE || a === WETH_L || received[i] === 0n) continue;
+      // Await the actual swap operation; a timeout race here would leave a background
+      // writer running after the caller releases the wallet lock.
+      // Entry pause/off must not abandon an exit after its burn has broadcast.
+      const swap = await kyberSwap(addr, KYBER_NATIVE, received[i]!, { assertActive() {} });
+      if (!swap?.tx || swap.amountOut <= 0n) throw new Error("Received-token sale unavailable, unconfirmed, or no positive cash received");
+      const swapBlock = receiptBlock(await provider.getTransactionReceipt(swap.tx));
+      if (swapBlock < confirmedBlockNumber) throw new Error("Swap receipt predates this exit operation");
+      confirmedBlockNumber = swapBlock;
+      sweepHashes.push(swap.tx);
+      if (await rawBalance(addr, swapBlock) !== before[i]) throw new Error("Received-token sale left residual or consumed pre-held inventory");
+    }
+    dropDeposit(tokenId);
+    return { strict: true, completed: true, txHash: tx.hash, confirmedBlockNumber, sweepHashes, recv0Raw: received[0]!.toString(),
+      recv1Raw: received[1]!.toString(), currency0: c0, currency1: c1 };
+  } catch (error) {
+    throw new StrictExitError(`Strict exit #${tokenId}: ${(error as Error).message}`, broadcastPossible, positionBurned, txHash);
+  }
+}
+
 export async function closeV4Position(tokenId: string, reason?: "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "manual"): Promise<V4CloseResult> {
   const w = wallet();
   // Read the pool key + currencies directly (no SDK Pool). The SDK's removeCallParameters

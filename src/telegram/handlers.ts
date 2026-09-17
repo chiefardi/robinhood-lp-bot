@@ -14,7 +14,6 @@ import { ethUsd } from "../chain/price.js";
 import { topVolumeNow, wcfg, usingOwnWatchRpc } from "../watch/scanner.js";
 import { startWatch, stopWatch, restartWatch, isWatchOn } from "./watchLoop.js";
 import { startFeed, stopFeed, feedStatus } from "./feedLoop.js";
-import { autoLpStatus } from "../radar/autolp.js";
 import { send, sendMenu, edit, explorerTx, sendPhoto, downloadTgFile } from "./tg.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { ethers } from "ethers";
@@ -1206,86 +1205,11 @@ export async function onV2Close(pair: string): Promise<void> {
 // ══════════ /auto (autonomous LP) ══════════
 
 export async function onAuto(arg = ""): Promise<void> {
-  const a = cfg.autoLp;
-  const parts = arg.trim().split(/\s+/).filter(Boolean);
-  const cmd = (parts[0] ?? "").toLowerCase();
+  const { riskAutoCommand } = await import("./auto-controls.js");
+  const { riskStore } = await import("../radar/auto-risk.js");
   const { startManage, stopManage } = await import("../radar/automanage.js");
-
-  if (cmd === "on") {
-    a.enabled = true;
-    persist();
-    startManage();
-    const armed = a.tpPct > 0 || a.slPct > 0 || a.closeOor;
-    await send(
-      [
-        `🤖 <b>AUTO ON</b> ⚠️ (add + close, using real funds)`,
-        `• <b>Auto-add</b>: open positions when candidates pass radar + gates (source ${a.sources.join("/")}, ${a.requireAction}≥${a.minScore}, ${a.sizeEth}Ξ ${a.mode}).`,
-        `• <b>Auto-close</b>: ${armed ? `TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"} (check every ${a.manageSec}s)` : "not configured — use <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on</code>"}`,
-        ``,
-        `Turn off: <code>/auto off</code>`,
-      ].join("\n"),
-    );
-    return;
-  }
-  if (cmd === "off") {
-    a.enabled = false;
-    persist();
-    stopManage();
-    await send("🤖 <b>AUTO OFF</b>. Back to manual (notifications + buttons). TP/SL/OOR thresholds are preserved.");
-    return;
-  }
-  if (cmd === "tp" || cmd === "sl") {
-    const v = parseFloat(parts[1] ?? "");
-    if (!(v >= 0)) {
-      await send(`Format: <code>/auto ${cmd} ${cmd === "tp" ? "100" : "50"}</code> (percent, 0 = off)`);
-      return;
-    }
-    if (cmd === "tp") a.tpPct = v;
-    else a.slPct = v;
-    persist();
-    await send(
-      cmd === "tp"
-        ? `🎯 Take-profit: ${v > 0 ? `auto-close positions when profit <b>≥ +${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`
-        : `🛑 Stop-loss: ${v > 0 ? `auto-close positions when loss <b>≤ -${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`,
-    );
-    return;
-  }
-  if (cmd === "oor") {
-    a.closeOor = /^(on|1|true|yes)$/i.test(parts[1] ?? "");
-    persist();
-    await send(`🚪 Auto-close out-of-range: <b>${a.closeOor ? "ON" : "OFF"}</b>.${a.closeOor && !a.enabled ? " (enable: /auto on)" : ""}`);
-    return;
-  }
-
-  const s = autoLpStatus();
-  const armed = a.tpPct > 0 || a.slPct > 0 || a.closeOor;
-  const T = [
-    `${padR("status", 13)} ${a.enabled ? "🟢 ON" : "off"}`,
-    `── auto-add ──`,
-    `${padR("size", 13)} ${a.sizeEth}Ξ · ${a.mode}`,
-    `${padR("trigger", 13)} ${a.requireAction} & score ≥ ${a.minScore}`,
-    `${padR("source", 13)} ${a.sources.join(", ")}`,
-    `${padR("cap", 13)} ${a.maxOpen} positions · ${a.maxPerHour}/hour · ${a.dailyCapEth}Ξ/day`,
-    `── auto-close ──`,
-    `${padR("take-profit", 13)} ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"}`,
-    `${padR("stop-loss", 13)} ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"}`,
-    `${padR("close OOR", 13)} ${a.closeOor ? "on" : "off"}${a.closeOor && a.oorAction === "rebalance" ? " → ♻️ rebalance" : ""}`,
-    `${padR("vol-fade", 13)} ${a.volFadeX > 0 ? `on (spike < ${a.volFadeX}× · age > ${a.vfadeMinAgeMin}m)` : "off"}`,
-    `${padR("fee-velocity", 13)} ${a.minFeePerHourUsd > 0 ? `on (< $${a.minFeePerHourUsd}/h · age > ${a.feeGraceMin}m)` : "off"}`,
-    `${padR("compound", 13)} ${a.compound ? `on (fee ≥ $${a.compoundMinUsd})` : "off"}`,
-    `${padR("check every", 13)} ${a.manageSec}s`,
-    ``,
-    `${padR("today", 13)} ${s.opensToday} open · ${s.spentToday.toFixed(4)}Ξ`,
-  ];
-  await send(
-    `🤖 <b>Auto (add + close)</b>${pre(T.join("\n"))}` +
-      `<code>/auto on</code> · <code>/auto off</code>\n` +
-      `Close: <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on|off</code>\n` +
-      `Mode: <code>/set alpmode single</code> (rug-safe) · <code>/set alpmode inrange</code> (immediate fees)\n` +
-      `♻️ OOR→recenter: <code>/set alprebalance rebalance</code> · 🔁 compound fee: <code>/set alpcompound 1</code> · <code>/set alpcompoundmin 0.5</code>\n` +
-      `Add: <code>/set alpsize 0.001</code> · <code>/set alpscore 75</code> · <code>/set alpmaxopen 3</code>\n` +
-      `<i>⚠️ Automatic transactions use real funds. ${armed ? "Auto-close ARMED." : "Auto-close is not configured."} Auto-add requires radar (/set radar 1).</i>`,
-  );
+  const { walletBusy } = await import("../chain/txlock.js");
+  await riskAutoCommand(arg, cfg.autoLp, {store:riskStore,persist,start:startManage,stop:stopManage,send,walletBusy});
 }
 
 // ══════════ close ══════════

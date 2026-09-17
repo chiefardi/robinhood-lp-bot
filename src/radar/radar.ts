@@ -28,6 +28,7 @@ export interface Candidate {
 export interface Verdict {
   llm: LlmVerdict | null;
   gmgn: GmgnData | null;
+  llmSource?: 'model' | 'heuristic';
 }
 
 export function radarEnabled(): boolean {
@@ -55,7 +56,7 @@ export async function scoreCandidate(c: Candidate): Promise<Verdict | null> {
   const llm = await llmScore(SYSTEM, user);
   if (!llm && !gmgn) return null;
   if (llm) log.info(`${c.symbol}: ${llm.action} (${llm.score}) — ${llm.summary.slice(0, 60)}`);
-  return { llm, gmgn };
+  return { llm, gmgn, llmSource: llm ? 'model' : undefined };
 }
 
 function buildPrompt(c: Candidate, gmgn: GmgnData | null): string {

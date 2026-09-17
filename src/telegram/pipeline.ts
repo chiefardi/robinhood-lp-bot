@@ -34,7 +34,7 @@ function screenBlocks(verdict: Verdict | null): boolean {
   const v = verdict?.llm;
   if (v && (v.action === "skip" || v.score < cfg.scan.minScore)) return true;
   const g = verdict?.gmgn;
-  if (g && (g.isHoneypot === "yes" || (g.isHoneypot as unknown) === true)) return true;
+  if (g?.isHoneypot === true) return true;
   return false;
 }
 
@@ -90,16 +90,17 @@ export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool):
     token: r.token.address,
     symbol: r.token.symbol,
     source: "hunt",
-    liq: pool.liqUsd || r.token.liquidity,
+    liq: pool.liqUsd,
     vol1h: r.token.volume,
     fdv: r.token.marketCap,
   };
   // Use the LLM verdict when present; otherwise synthesize one from the thesis score so a qualified
   // 3-5% candidate outside the LLM top-N is still eligible for auto-add (screen already vetted it).
   const action = r.verdict ?? (r.score >= 75 ? "ape" : r.score >= cfg.scan.minScore ? "watch" : "skip");
-  const verdict: Verdict = {
+  const verdict: Verdict | null = cfg.autoLp.requireLlm ? await scoreCandidate(candidate) : {
     llm: { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community} (heuristic)` },
     gmgn: null,
+    llmSource: 'heuristic',
   };
   await runAuto(candidate, verdict);
 }

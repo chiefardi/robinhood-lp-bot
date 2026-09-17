@@ -52,7 +52,7 @@ export interface GmgnData {
   smartWallets?: number; // smart money holders
   kolWallets?: number;
   // security
-  isHoneypot?: string; // "yes"/"no"/""
+  isHoneypot?: boolean; // undefined is UNKNOWN, never interpreted as false
   buyTax?: number;
   sellTax?: number;
   rugRatio?: number;
@@ -60,6 +60,10 @@ export interface GmgnData {
   ownerRenounced?: string;
   sniperCount?: number;
   devHolding?: string;
+  observedAt?: number;
+  launchBundlerRate?: number; // historical allocation, NOT current linked-wallet exposure
+  currentLinkedHoldingRate?: number;
+  currentBundlerHoldingRate?: number;
 }
 
 /** One trending-token row from `gmgn-cli market trending` (fields we screen on). */
@@ -190,7 +194,20 @@ export async function gmgnToken(address: string): Promise<GmgnData | null> {
     run(["token", "security", "--chain", CHAIN, "--address", address, "--raw"]),
   ]);
   if (!info && !sec) return null;
-  const num = (v: unknown) => (v == null || v === "" ? undefined : Number(v));
+  return normalizeGmgnToken(info?.data ?? info, sec?.data ?? sec, Date.now());
+}
+
+export function normalizeGmgnToken(info: any, sec: any, observedAt: number): GmgnData {
+  const num = (v: unknown): number | undefined => {
+    if ((typeof v !== 'number' && typeof v !== 'string') || String(v).trim() === '') return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const bool = (v: unknown): boolean | undefined => {
+    if (v === true || v === 1 || (typeof v === 'string' && /^(true|yes|1)$/i.test(v.trim()))) return true;
+    if (v === false || v === 0 || (typeof v === 'string' && /^(false|no|0)$/i.test(v.trim()))) return false;
+    return undefined;
+  };
   const price = num(info?.price?.price);
   const supply = num(info?.circulating_supply ?? info?.total_supply);
   return {
@@ -201,7 +218,7 @@ export async function gmgnToken(address: string): Promise<GmgnData | null> {
     holders: num(info?.holder_count),
     smartWallets: num(info?.wallet_tags_stat?.smart_wallets),
     kolWallets: num(info?.wallet_tags_stat?.renowned_wallets),
-    isHoneypot: sec?.is_honeypot,
+    isHoneypot: bool(sec?.is_honeypot),
     buyTax: num(sec?.buy_tax),
     sellTax: num(sec?.sell_tax),
     rugRatio: num(sec?.rug_ratio),
@@ -209,5 +226,10 @@ export async function gmgnToken(address: string): Promise<GmgnData | null> {
     ownerRenounced: sec?.owner_renounced,
     sniperCount: num(sec?.sniper_count),
     devHolding: sec?.creator_token_status,
+    observedAt,
+    launchBundlerRate: num(sec?.bundler_rate),
+    // Explicit current-holdings fields only. No launch-rate or top-holder proxy fallback.
+    currentLinkedHoldingRate: num(sec?.current_linked_holding_rate),
+    currentBundlerHoldingRate: num(sec?.current_bundler_holding_rate),
   };
 }

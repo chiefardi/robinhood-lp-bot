@@ -72,13 +72,15 @@ async function kyberBuild(routeSummary: any, sender: string, recipient: string, 
 export interface KyberSwapResult {
   tx: string;
   amountOut: bigint; // actual tokenOut received (balance delta)
+  blockNumber?:number;
 }
 
 /**
  * Best-route swap. tokenIn = KYBER_NATIVE for ETH. Returns null if the aggregator can't route
  * (caller can fall back). Throws only on a SECURITY gate failure (never silently unsafe).
  */
-export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<KyberSwapResult | null> {
+export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint, strict?:{assertActive():void}): Promise<KyberSwapResult | null> {
+  strict?.assertActive();
   if (!kyberEnabled() || amountIn <= 0n) return null;
   const w = wallet();
   const nativeIn = tokenIn.toLowerCase() === KYBER_NATIVE.toLowerCase();
@@ -119,14 +121,16 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   if (!nativeIn) {
     const erc = new ethers.Contract(tokenIn, ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], w);
     if ((await erc.allowance!(w.address, env.kyberRouter)) < amountIn) {
-      await waitTx(await erc.approve!(env.kyberRouter, amountIn, await overrides()), "kyber-approve");
+      const gas=await overrides();strict?.assertActive();
+      const receipt=await waitTx(await erc.approve!(env.kyberRouter, amountIn, gas), "kyber-approve");
+      if(strict&&receipt?.status!==1)throw new Error('strict Kyber approval uncertain');
     }
   }
 
   // measure output by balance delta (native ETH out → getBalance; ERC20 → balanceOf)
   const nativeOut = tokenOut.toLowerCase() === KYBER_NATIVE.toLowerCase();
   const outErc = nativeOut ? null : new ethers.Contract(tokenOut, ["function balanceOf(address) view returns (uint256)"], provider);
-  const outBal = async (): Promise<bigint> => (nativeOut ? provider.getBalance(w.address) : outErc!.balanceOf!(w.address).catch(() => 0n));
+  const outBal = async (block?:number): Promise<bigint> => (nativeOut ? provider.getBalance(w.address,block) : strict ? outErc!.balanceOf!(w.address,block==null?{}:{blockTag:block}) : outErc!.balanceOf!(w.address).catch(() => 0n));
   const before = await outBal();
   await provider.call({ to: env.kyberRouter, data: built.data, value, from: w.address }); // simulate (unbounded gas)
   // GAS: give the swap an explicit gasLimit = estimate × 2. The Kyber router runs the underlying pool
@@ -135,10 +139,12 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   // with gasUsed == gasLimit (233382). The 2× buffer absorbs the under-estimate + any state drift before
   // inclusion; only gasUsed is actually paid, so over-provisioning the limit costs nothing.
   const est = await provider.estimateGas({ to: env.kyberRouter, data: built.data, value, from: w.address }).catch(() => 300_000n);
-  const tx = await w.sendTransaction({ to: env.kyberRouter, data: built.data, value, gasLimit: est * 2n, ...(await overrides()) });
-  await waitTx(tx, "kyber-swap");
-  const after = await outBal();
-  return { tx: tx.hash, amountOut: after > before ? after - before : 0n };
+  const gas=await overrides();strict?.assertActive();
+  const tx = await w.sendTransaction({ to: env.kyberRouter, data: built.data, value, gasLimit: est * 2n, ...gas });
+  const receipt=await waitTx(tx, "kyber-swap");
+  if(strict&&(receipt?.status!==1||!Number.isSafeInteger(receipt.blockNumber)||receipt.blockNumber<=0))throw new Error('strict Kyber receipt uncertain');
+  const after = await outBal(strict?receipt!.blockNumber:undefined);
+  return { tx: tx.hash, amountOut: after > before ? after - before : 0n, blockNumber:receipt?.blockNumber };
 }
 
 /** Human route breakdown: "60% uniswapv3 · 40% up-v3". */
