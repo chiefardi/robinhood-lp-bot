@@ -65,19 +65,43 @@ financial actions are blocked while auto is on or execution is unresolved.
 
 Only exact, hook-free USDG v4 pools in the existing qualified 3–5% fee universe are
 eligible. ETH-quoted/v3 fallback is blocked. Pool liquidity must be positive and
-known; GMGN must explicitly report non-honeypot status, known taxes, and known
-**current** linked/bundler holding exposure (not historical launch allocation).
-The current code rejects exposure above 30%; this is a screening cutoff, not proof
-that the token is safe. Missing fields block entries.
+known; GMGN must explicitly report non-honeypot status and known taxes.
+The approved rules-only pilot uses `token holders` (top 100 by total-supply share):
 
-The existing `requireLlm` setting is preserved. A heuristic score is never accepted
-as a real model verdict. A rules-only experiment requires an explicit configuration
-choice; this change does not silently remove the LLM requirement.
+- At least 70% total-supply coverage, with valid distinct addresses, supply shares,
+  vendor custody classifications and tag arrays. Missing/malformed data blocks entry.
+- Observed normal-wallet supply tagged bundler, rat trader, sniper, dev team or
+  creator is counted once. **All unobserved supply** is added to this tagged-risk
+  amount; the resulting bound must be at most 30% of total supply.
+- Vendor-classified pool/burn custody is excluded from normal-wallet concentration
+  and tagged-wallet exposure, but is reported separately. It is not proof of safe
+  custody or locked liquidity. Tradeable float below 2% blocks assessment.
+- Largest observed normal wallet at most 10%; observed normal-wallet top ten at
+  most 50%. Observed groups of two or more wallets sharing a reported native
+  funder at most 20%. Shared funding is a risk flag, **not proof of common ownership**.
+- Security and holder evidence must each be no older than 60 seconds, including
+  at financial broadcast. Missing full-history linkage is not presented as known.
+
+This replaces the earlier impossible required-field mapping. It screens vendor
+labels and partial holdings, not complete beneficial ownership. Untagged linked
+wallets, issuer/control privileges and incorrectly labelled custody can still be
+missed. Historical launch bundles and bundler **volume** never become current
+holdings. The old optional normalization fields no longer authorize entry.
+
+Exact chosen-pool 5-minute and 1-hour volume must meet the configured watch
+thresholds, with nonzero buys and sells in the last five minutes. Token-wide volume
+is insufficient. These activity signals cannot establish organic volume by themselves.
+GMGN requests are serialized and paced, with a five-minute cooldown on rate-limit
+errors. Queued/stale or unavailable data blocks entry, not a safety bypass.
+
+Chief explicitly selected rules-only on September 17: Alexandria uses
+`requireLlm=false`. No model key is needed. A heuristic score is never presented
+as a model verdict. Other deployments retain their configured LLM requirement.
 
 Before live activation, separately verify:
 
-1. Real GMGN response coverage for the required current-exposure fields; fixture
-   tests do not establish that GMGN actually supplies them for this chain/token.
+1. Real GMGN holder response coverage and reject reasons; fixture tests alone do
+   not establish that a live candidate passes the coverage-aware policy.
 2. Correct chain 4663, wallet identity, fresh RPC/quote responses, and clean inventory.
 3. Receipt-bound cash accounting and swap minimum outputs on the intended routes.
 4. Available native gas, position sizing including fees, and an operator recovery plan.

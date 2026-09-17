@@ -5,7 +5,7 @@ import { inOorCooldown } from './oorcool.js';
 import { logger } from '../util/log.js';
 import { gmgnToken } from './gmgn.js';
 import { riskStore,validateExitSettings } from './auto-risk.js';
-import { guardedEntry, securityFailure, llmFailure, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
+import { guardedEntry, securityFailure, llmFailure, poolActivityFailure, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
 import type { Candidate, Verdict } from './radar.js';
 
 const log = logger('autolp');
@@ -39,12 +39,14 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (tracked.length >= Math.min(3, a.maxOpen)) throw new Error('maximum open positions');
         if (tracked.some(r=>r.token.toLowerCase() === candidate.token.toLowerCase())) throw new Error('position already exists for token');
         await strictInventory(tracked.map(r=>r.tokenId));
-        const g = await gmgnToken(candidate.token);
+        const g = await gmgnToken(candidate.token,{holders:true});
         const failure = securityFailure(g, a.maxTaxPct, Date.now());
         if (failure) throw new Error(failure);
         const {qualifyCandidate} = await import('../chain/candidate.js');
         const q = await qualifyCandidate(candidate.token);
         if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
+        const activity=poolActivityFailure(q,cfg.watch,Date.now());
+        if(activity)throw new Error(activity);
         if (q.quote !== 'usd') throw new Error('ETH auto route blocked: exact qualified pool execution unavailable');
         if (!Number.isFinite(q.liqUsd) || q.liqUsd <= 0 || q.liqUsd < Math.max(a.minLiqUsd,cfg.scan.minPoolLiqUsd)) throw new Error('qualified pool liquidity missing or too low');
         if (q.v4.liquidity <= 0n || !Number.isFinite(q.volPct)) throw new Error('invalid qualified pool state');
@@ -75,6 +77,8 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         const strict={fixedEntryPrice:p.price.usd,priceObservedAt:p.price.observedAt,sizeUsd:p.sizeUsd,expectedPoolId:p.q.v4.poolId,assertActive:()=>{
           const securityBlock=securityFailure(p.g,cfg.autoLp.maxTaxPct,Date.now());
           if(securityBlock)throw new Error(securityBlock);
+          const activityBlock=poolActivityFailure(p.q,cfg.watch,Date.now());
+          if(activityBlock)throw new Error(activityBlock);
           validateExitSettings(cfg.autoLp);
           if(cfg.autoLp.slPct<=0 || (cfg.autoLp.tpPct<=0&&cfg.autoLp.trailActivationPct<=0))throw new Error('required exit protection unavailable');
           if (Date.now()<p.price.observedAt || Date.now()-p.price.observedAt>60_000) throw new Error('entry price expired before broadcast');
