@@ -13,6 +13,7 @@
  */
 import { ethers } from "ethers";
 import { cfg } from "../config.js";
+import { riskStore } from '../radar/auto-risk.js';
 import { provider } from "../chain/client.js";
 import { POOL_ABI } from "../chain/abis.js";
 import { tokenMeta } from "../chain/tokens.js";
@@ -198,7 +199,7 @@ export class FeedMonitor {
       const side: "atas" | "bawah" = tick >= pos.tickUpper ? "atas" : "bawah";
       let autoClosed = false;
       let closeError: string | undefined;
-      if (cfg.feed.autoCloseOutOfRange) {
+      if (cfg.feed.autoCloseOutOfRange && !riskStore.hasSession()) {
         try {
           await closePosition(pos.tokenId);
           autoClosed = true;

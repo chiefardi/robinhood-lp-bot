@@ -162,7 +162,7 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
 export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
   const emo = i.reason === "TP" ? "🎯💰" : i.reason === "SL" ? "🛑" : i.reason === "VFADE" ? "📉" : i.reason === "FVLOW" ? "🐌" : "🚪";
   const label =
-    i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
+    i.reason === "TRAIL" ? "TRAILING PROFIT" : i.reason === "SESSION" ? "SESSION LOSS LIMIT" : i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
   const pnl =
     i.pnlPct != null
       ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}Ξ)` : ""}`
@@ -170,8 +170,8 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
   await send(
     [
       `${emo} <b>AUTO-CLOSE · ${label}</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId} [${i.version}]`,
-      `PnL: <b>${pnl}</b>`,
-      `<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
+      `${i.realizedPnlUsd!=null?'Realized cash PnL':'PnL'}: <b>${pnl}${i.realizedPnlUsd!=null?` ($${i.realizedPnlUsd.toFixed(2)})`:''}</b>`,
+      i.realizedPnlUsd!=null?`Trigger estimate: ${i.estimatedPnlPct?.toFixed(2)??'?'}%. Session accounting: /auto status (separate from legacy LP-versus-HODL ledger).`:`<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
 }

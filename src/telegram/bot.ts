@@ -12,12 +12,19 @@ import { wallet } from "../chain/client.js";
 import { cfg } from "../config.js";
 import { logger } from "../util/log.js";
 import * as H from "./handlers.js";
+import { riskStore } from '../radar/auto-risk.js';
+import { walletBusy } from '../chain/txlock.js';
+import { isFinancialMessage, isFinancialCallback } from './manual-guard.js';
 
 const log = logger("bot");
 let running = true;
 
 const CA_RE = /^0x[a-fA-F0-9]{40}$/;
 const NUM_RE = /^[0-9]*\.?[0-9]+$/;
+function manualBlocked():boolean {
+  try{return cfg.autoLp.enabled||walletBusy()||riskStore.executionBlocked();}catch{return true;}
+}
+const MANUAL_PAUSE='Manual wallet actions are blocked while auto is enabled, a transaction is in flight, or execution needs reconciliation. /auto pause stops entries only. /auto off stops exit monitoring too. Check /auto status.';
 
 async function routeCallback(cq: any): Promise<void> {
   const chatId = String(cq.message.chat.id);
@@ -31,6 +38,8 @@ async function routeCallback(cq: any): Promise<void> {
     callback_query_id: cq.id,
     ...(d === "refresh" ? { text: "🔄 Fetching on-chain data…" } : {}),
   });
+
+  if(isFinancialCallback(d)&&manualBlocked()){await send(MANUAL_PAUSE);return;}
 
   if (d.startsWith("ca:")) return H.onCA(d.slice(3));
   if (d === "refresh") return H.onList(mid, true); // force = bypass cache, fetch fresh
@@ -87,6 +96,7 @@ async function routeMessage(m: any): Promise<void> {
     return;
   }
 
+  if(isFinancialMessage(t)&&manualBlocked()){await send(MANUAL_PAUSE);return;}
   if (t === "/start" || t === "/help") return H.onHelp();
   if (t === "/list") return H.onList();
   if (t === "/ledger") return H.onLedger(0);
@@ -170,6 +180,7 @@ export async function run(): Promise<void> {
     },
   }); // hunter (cfg.scan.enabled)
   startManage({
+    onRiskWarning:message=>void send(`⚠️ ${message.replace(/[<>&]/g,'')}`).catch(()=>{}),
     onAutoClose: (i) => void notifyAutoClose(i).catch(() => {}), // auto-close TP/SL/OOR (gated by cfg.autoLp)
     onRebalance: (i) => void notifyRebalance(i).catch(() => {}), // #1 OOR → recentered re-open
     onCompound: (i) => void notifyCompound(i).catch(() => {}), // #3 fees folded back in

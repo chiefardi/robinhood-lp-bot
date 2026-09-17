@@ -1,28 +1,18 @@
 /**
- * Auto-manage open positions: take-profit / stop-loss / out-of-range → auto-close. Covers BOTH v3
- * and v4. Opt-in and OFF by default (tpPct=slPct=0, closeOor=false) — nothing closes until the
- * operator sets a trigger, and the whole loop only runs while /auto is ON.
- *
- * ⚠️ Closes SPEND REAL FUNDS on the shared wallet — every close is guarded by the same staticCall
- * the manual close uses, and a `closing` set prevents double-firing before /list catches up.
+ * Dedicated cash-basis v4 pilot management. Runs only while auto is enabled.
+ * Entries-only pause leaves exits running; persisted intents guard unknown sends.
+ * Quote/close/cash reads share one wallet lock. No legacy HODL-relative fallback.
  */
 import { cfg } from "../config.js";
-import { listPositions, closePosition } from "../chain/positions.js";
-import { ethUsd } from "../chain/price.js";
-import { acquireWallet, releaseWallet } from "../chain/txlock.js";
-import { recordOor, inOorCooldown } from "./oorcool.js";
-import { dexPairs } from "../chain/dexscreener.js";
+import { acquireWallet, releaseWallet, walletBusy } from "../chain/txlock.js";
 import { logger } from "../util/log.js";
+import { riskStore } from "./auto-risk.js";
+import { runRiskCycle } from "./risk-manager.js";
 
 const log = logger("automanage");
 
-export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW";
+export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "TRAIL" | "SESSION";
 
-// fee-velocity exit: rolling {uncollected fee $, ts} snapshot per position, so we can measure the
-// RECENT fee-earning rate ($/h) over a window rather than a lagging cumulative average — catches a
-// pool that earned well then died, not just one that was never productive.
-const feeSnap = new Map<string, { fee: number; ts: number }>();
-const FVLOW_WINDOW_MS = Number(process.env.RH_FVLOW_WINDOW_MS) || 15 * 60_000; // measure the rate over ≥ this
 export interface AutoCloseInfo {
   tokenId: string;
   sym: string;
@@ -30,6 +20,8 @@ export interface AutoCloseInfo {
   reason: CloseReason;
   pnlPct: number | null;
   pnlEth: number | null;
+  realizedPnlUsd?: number;
+  estimatedPnlPct?: number | null;
 }
 export interface RebalanceInfo {
   oldTokenId: string;
@@ -43,15 +35,18 @@ export interface CompoundInfo {
 }
 export interface ManageHooks {
   onAutoClose: (info: AutoCloseInfo) => void;
+  onRiskWarning?: (message:string) => void;
   onRebalance?: (info: RebalanceInfo) => void; // #1 OOR → recentered re-open
   onCompound?: (info: CompoundInfo) => void; // #3 fees folded back into a position
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let hooks: ManageHooks | null = null;
-const closing = new Set<string>(); // tokenIds mid-close (dedupe across ticks)
-const compounding = new Set<string>(); // tokenIds mid-compound (dedupe across ticks)
-const oorSince = new Map<string, number>(); // tokenId → first-seen-OOR ts (grace timer)
+const warningTimes=new Map<string,number>();
+function riskWarning(message:string):void {
+  log.warn(message);
+  if(Date.now()-(warningTimes.get(message)??0)>300_000){warningTimes.set(message,Date.now());hooks?.onRiskWarning?.(message);}
+}
 const stats = { runs: 0, closed: 0, rebalanced: 0, compounded: 0, nudges: 0, lastAt: 0 };
 let tickRunning = false; // a manage tick is in-flight (timer + feed nudge must not overlap)
 let lastTickAt = 0; // ts of the last tick START (debounce feed nudges)
@@ -63,6 +58,7 @@ const NUDGE_MIN_MS = Number(process.env.RH_NUDGE_MS) || 30_000;
 /** Any manage action armed? (loop is a no-op otherwise, even when /auto is ON.) */
 function armed(): boolean {
   const a = cfg.autoLp;
+  try { if(riskStore.hasSession()) return true; } catch { return true; }
   return a.tpPct > 0 || a.slPct > 0 || a.closeOor || a.compound || a.volFadeX > 0 || a.minFeePerHourUsd > 0;
 }
 
@@ -87,20 +83,40 @@ export function manageStatus(): { on: boolean } & typeof stats {
 }
 
 async function tick(): Promise<void> {
-  if (!cfg.autoLp.enabled || !armed() || tickRunning) return;
+  if (!cfg.autoLp.enabled || !armed() || tickRunning || walletBusy()) return;
   tickRunning = true;
   lastTickAt = Date.now();
   try {
-    await runManage();
+    // Pilot exits must never fall back to the legacy HODL-relative calculation.
+    if(!riskStore.hasSession()) { log.warn('No risk session: automatic exits disabled'); return; }
+    const {quoteV4Exit}=await import('../chain/v4/exit-quote.js');
+    const {closeV4PositionStrict}=await import('../chain/v4/close.js');
+    const {strictCashSnapshot,freshEntryPrice}=await import('./entry-guard.js');
+    stats.runs++;stats.lastAt=Date.now();
+    await runRiskCycle(riskStore,cfg.autoLp,{
+      isEnabled:()=>cfg.autoLp.enabled,
+      quote:quoteV4Exit,acquire:acquireWallet,release:releaseWallet,
+      settle:async(id,reason)=>{
+        const price=await freshEntryPrice();
+        const before=await strictCashSnapshot();
+        const result=await closeV4PositionStrict(id,reason,{beforeBurn:()=>{if(!cfg.autoLp.enabled)throw new Error('Auto stopped before burn');}});
+        const after=await strictCashSnapshot(result.confirmedBlockNumber);
+        if(after.blockNumber<before.blockNumber)throw new Error('Regressing settlement snapshot');
+        if(after.usdg!==before.usdg)throw new Error('Unsettled USDG balance changed; cash PnL unknown');
+        return ((after.eth+after.weth)-(before.eth+before.weth))*price.usd;
+      },
+      notify:i=>{stats.closed++;hooks?.onAutoClose({tokenId:i.tokenId,sym:i.token,version:'v4',reason:i.reason,pnlPct:i.realizedPnlPct,pnlEth:null,realizedPnlUsd:i.realizedPnlUsd,estimatedPnlPct:i.estimatedPnlPct});},
+      warn:riskWarning,
+    });
   } catch (e) {
-    log.warn(`manage failed: ${(e as Error).message.slice(0, 90)}`);
+    riskWarning(`Risk monitoring unavailable; inspect /auto status. ${(e as Error).message.slice(0, 90)}`);
   } finally {
     tickRunning = false;
   }
 }
 
 /**
- * External trigger to run the TP/SL/OOR check NOW instead of waiting for the next `manageSec` poll —
+ * External trigger to run the cash-risk check instead of waiting for the next `manageSec` poll —
  * called by the sequencer feed when a swap touches one of our position tokens (sub-second reaction vs
  * up to 90s). Debounced (≤ once / NUDGE_MIN_MS) and skips if a tick is already running, so a burst of
  * feed events can't hammer the RPC. The interval timer stays as the reliable backstop for anything the
@@ -110,210 +126,7 @@ export function nudge(reason = "feed"): void {
   if (!cfg.autoLp.enabled || !armed() || tickRunning) return;
   if (Date.now() - lastTickAt < NUDGE_MIN_MS) return;
   stats.nudges++;
-  log.info(`manage nudge (${reason}) → check TP/SL/OOR`);
+  log.info(`manage nudge (${reason}) → check cash TP/SL/trailing`);
   void tick();
-}
-
-interface Item {
-  tokenId: string;
-  sym: string;
-  version: "v3" | "v4";
-  pnlPct: number | null;
-  pnlEth: number | null;
-  inRange: boolean;
-  tokenAddr: string; // volatile side — for OOR-cooldown blacklisting
-  ageMs: number | null; // on-chain position age — restart-proof OOR grace basis
-  feeUsd?: number | null; // uncollected fees ($) — compound threshold (v4 only)
-  poolId?: string; // v4 poolId — for the #3 volume-fade DexScreener match
-}
-
-/** #3 volume-fade: a v4 pool's current-hour vs 24h-average-hour volume (spikeX). 1 = neutral/no data. */
-async function poolSpikeX(tokenAddr: string, poolId: string): Promise<number> {
-  const m = await dexPairs(tokenAddr, Date.now()).catch(() => null);
-  const d = m?.get(poolId.toLowerCase());
-  if (!d || d.vol24h <= 0) return 1; // no data → never trigger a fade close
-  return d.volH1 / (d.vol24h / 24);
-}
-
-async function runManage(): Promise<void> {
-  const a = cfg.autoLp;
-  const now = Date.now();
-  stats.runs++;
-  stats.lastAt = now;
-  const px = await ethUsd().catch(() => 0);
-
-  const items: Item[] = [];
-  const v3 = await listPositions().catch(() => []);
-  for (const p of v3) items.push({ tokenId: p.tokenId, sym: p.tokenSym, version: "v3", pnlPct: p.pnlPct, pnlEth: p.pnlEth, inRange: p.inRange, tokenAddr: p.tokenAddr, ageMs: (p as { ageMs?: number | null }).ageMs ?? null });
-  try {
-    const { listV4Positions } = await import("../chain/v4/list.js");
-    const v4 = await listV4Positions().catch(() => []);
-    for (const r of v4) {
-      // valueUsd <= 0 means the position couldn't be valued THIS tick (cold tokenMeta right after a
-      // restart → wrong decimals → ~$0, or an unpriceable pool) — NOT a real $0 position (the quote
-      // side alone is always worth >$0). Leave pnl UNKNOWN (null) so a transient valuation miss can't
-      // fire a spurious TP/SL close. OOR/VFADE don't depend on pnl and still run.
-      const valEth = px > 0 && r.valueUsd > 0 ? r.valueUsd / px : null;
-      const pnlEth = r.depEth != null && valEth != null ? valEth - r.depEth : null;
-      const pnlPct = r.depEth && pnlEth != null ? (pnlEth / r.depEth) * 100 : null;
-      items.push({ tokenId: r.tokenId, sym: r.sym, version: "v4", pnlPct, pnlEth, inRange: r.inRange, tokenAddr: r.tokenAddr, ageMs: r.ageMs, feeUsd: r.feeUsd, poolId: r.poolId });
-    }
-  } catch {
-    /* v4 list optional */
-  }
-
-  // drop fee-velocity snapshots for positions that are no longer open (closed → free the memory)
-  const liveIds = new Set(items.map((i) => i.tokenId));
-  for (const id of feeSnap.keys()) if (!liveIds.has(id)) feeSnap.delete(id);
-
-  const graceMs = (a.oorGraceMin || 0) * 60_000;
-  for (const it of items) {
-    if (it.inRange) oorSince.delete(it.tokenId); // back in range → reset the OOR grace timer
-    if (closing.has(it.tokenId)) continue;
-
-    // fee-velocity: roll the rolling snapshot EVERY tick (independent of the close cascade) so the
-    // window matures; once it does, feeRate = recent $/h earned. Fee dropping (a compound/collect)
-    // restarts the window instead of reading a spurious negative rate.
-    let feeRate: number | null = null;
-    if (a.minFeePerHourUsd > 0 && it.version === "v4" && it.inRange && it.feeUsd != null) {
-      const snap = feeSnap.get(it.tokenId);
-      // NOTE feeUsd = uncollected-fee AMOUNT × token price, so it wobbles DOWN when the token price
-      // dips even though fees only accrue. Only restart the window on a COLLAPSE (> 50% drop = a
-      // compound/collect zeroed it) — a price wobble stays well above half, so the window still matures.
-      // (The old `feeUsd < snap.fee` reset fired on every price tick → the window never matured for
-      // exactly the low-fee positions FVLOW is meant to catch.)
-      if (!snap || it.feeUsd < snap.fee * 0.5) feeSnap.set(it.tokenId, { fee: it.feeUsd, ts: now });
-      else if (now - snap.ts >= FVLOW_WINDOW_MS) {
-        feeRate = (it.feeUsd - snap.fee) / ((now - snap.ts) / 3_600_000);
-        feeSnap.set(it.tokenId, { fee: it.feeUsd, ts: now }); // start the next window
-        log.info(`fee-eval #${it.tokenId} ${it.sym}: rate $${feeRate.toFixed(3)}/h (floor $${a.minFeePerHourUsd}) age ${it.ageMs != null ? (it.ageMs / 60000).toFixed(0) : "?"}m`);
-      }
-    }
-
-    let reason: CloseReason | null = null;
-    if (a.tpPct > 0 && it.pnlPct != null && it.pnlPct >= a.tpPct) reason = "TP";
-    else if (a.slPct > 0 && it.pnlPct != null && it.pnlPct <= -a.slPct) reason = "SL";
-    else if (a.closeOor && !it.inRange) {
-      // Close after `oorGraceMin` OUT of range. The grace timer is in-memory, so on the FIRST sighting
-      // BACKDATE it by the position's on-chain age: a single-side park is OOR from birth (age == time
-      // OOR), so this makes the grace survive a bot RESTART (which would otherwise reset the clock to 0
-      // every redeploy → 30-min-old parks never closing). inRange resets it (top of loop).
-      if (!oorSince.has(it.tokenId)) oorSince.set(it.tokenId, it.ageMs != null ? now - it.ageMs : now);
-      if (now - (oorSince.get(it.tokenId) ?? now) >= graceMs) reason = "OOR";
-    } else if (a.volFadeX > 0 && it.version === "v4" && it.inRange && it.poolId && it.ageMs != null && it.ageMs > (a.vfadeMinAgeMin || 20) * 60_000) {
-      // #3 volume-fade: the spike is over (current hour < volFadeX × the 24h-avg hour) → rotate out.
-      // Age-guarded (>vfadeMinAgeMin) so a fresh open gets time to earn fees before a momentary volume
-      // dip can close it — otherwise, when the entry spike sits near volFadeX, it fade-exits instantly.
-      if ((await poolSpikeX(it.tokenAddr, it.poolId)) < a.volFadeX) reason = "VFADE";
-    }
-    // fee-velocity exit — a STANDALONE check, NOT chained after VFADE: VFADE's outer `else if` condition
-    // (any in-range mature v4 position) is true for EVERY in-range position, so an `else if` after it
-    // would never be reached — FVLOW would silently never fire. Gated on `!reason` so a higher-priority
-    // TP/SL/OOR/VFADE still wins. The position's RECENT fee-rate ($/h over the window) fell below the
-    // floor → the pool stopped being productive → evict it so the slot rotates to a live candidate.
-    // Age-graced (feeGraceMin) so a slow-starter isn't cut. The direct "is this LP actually earning?".
-    if (
-      !reason &&
-      a.minFeePerHourUsd > 0 &&
-      it.version === "v4" &&
-      it.inRange &&
-      it.ageMs != null &&
-      it.ageMs > (a.feeGraceMin || 30) * 60_000 &&
-      feeRate != null &&
-      feeRate < a.minFeePerHourUsd
-    ) {
-      log.info(`FVLOW #${it.tokenId} ${it.sym}: fee-rate $${feeRate.toFixed(3)}/h < $${a.minFeePerHourUsd}/h`);
-      reason = "FVLOW";
-    }
-    if (!reason) continue;
-    closing.add(it.tokenId);
-    void doClose(it, reason);
-  }
-
-  // #3 fee-compound: fold accrued fees back into IN-RANGE v4 positions once they clear the threshold.
-  // Separate pass so it never competes with a close decision — a position being TP/SL/OOR-closed this
-  // tick is already in `closing` and skipped here. The threshold self-rate-limits: after a compound the
-  // uncollected fees reset ~0, so it won't re-fire until they rebuild past compoundMinUsd again.
-  if (a.compound) {
-    for (const it of items) {
-      if (it.version !== "v4" || !it.inRange) continue;
-      if (closing.has(it.tokenId) || compounding.has(it.tokenId)) continue;
-      if ((it.feeUsd ?? 0) < a.compoundMinUsd) continue;
-      compounding.add(it.tokenId);
-      void doCompound(it);
-    }
-  }
-}
-
-async function doClose(it: Item, reason: CloseReason): Promise<void> {
-  // Serialize on the shared wallet: if an open (or another close) is mid-flight, skip and retry next
-  // tick — concurrent multi-tx sequences collide on nonce.
-  if (!acquireWallet()) {
-    closing.delete(it.tokenId);
-    return;
-  }
-  const a = cfg.autoLp;
-  try {
-    log.info(`AUTO-CLOSE ${it.version} #${it.tokenId} ${it.sym} — ${reason} (pnl ${it.pnlPct?.toFixed(1) ?? "?"}%)`);
-    if (it.version === "v3") {
-      await closePosition(it.tokenId);
-    } else {
-      const { closeV4Position } = await import("../chain/v4/close.js");
-      await closeV4Position(it.tokenId, reason);
-    }
-    stats.closed++;
-    if (reason === "OOR") recordOor(it.tokenAddr); // #2: streak toward blacklisting a token that never fills
-    hooks?.onAutoClose({ tokenId: it.tokenId, sym: it.sym, version: it.version, reason, pnlPct: it.pnlPct, pnlEth: it.pnlEth });
-    // keep it in `closing` a while so a stale /list (before Blockscout updates) can't re-fire it
-    setTimeout(() => closing.delete(it.tokenId), 300_000);
-
-    // #1 rebalance-on-OOR: instead of leaving the freed capital idle in ETH, re-center the SAME token
-    // on the current price (close → re-open recentered). Only v4, only when NOT already in OOR-cooldown
-    // (that #2 counter — bumped by recordOor above — caps the rebalance churn on a token that keeps
-    // drifting). reopenRecentered no-ops (returns null) if the token no longer qualifies or funds fall
-    // short. Runs while the wallet lock is STILL held → the close+reopen is atomic (no nonce race).
-    if (reason === "OOR" && a.oorAction === "rebalance" && it.version === "v4" && !inOorCooldown(it.tokenAddr)) {
-      try {
-        const { reopenRecentered } = await import("./autolp.js");
-        const r = await reopenRecentered(it.tokenAddr, it.sym);
-        if (r) {
-          stats.rebalanced++;
-          hooks?.onRebalance?.({ oldTokenId: it.tokenId, newTokenId: r.tokenId, sym: it.sym });
-        }
-      } catch (e) {
-        log.warn(`rebalance #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
-      }
-    }
-  } catch (e) {
-    log.warn(`auto-close #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
-    closing.delete(it.tokenId); // let the next tick retry
-  } finally {
-    releaseWallet();
-  }
-}
-
-async function doCompound(it: Item): Promise<void> {
-  // Serialize on the shared wallet (collect + approve + increase is a multi-tx sequence).
-  if (!acquireWallet()) {
-    compounding.delete(it.tokenId);
-    return;
-  }
-  try {
-    const { compoundV4Position } = await import("../chain/v4/close.js");
-    const r = await compoundV4Position(it.tokenId);
-    if (r.compounded) {
-      stats.compounded++;
-      log.info(`AUTO-COMPOUND v4 #${it.tokenId} ${it.sym} — fee $${(it.feeUsd ?? 0).toFixed(2)} → liq`);
-      hooks?.onCompound?.({ tokenId: it.tokenId, sym: it.sym, feeUsd: it.feeUsd ?? 0 });
-    } else {
-      log.info(`compound v4 #${it.tokenId} skip: ${r.reason ?? "?"}`);
-    }
-  } catch (e) {
-    log.warn(`compound #${it.tokenId} failed: ${(e as Error).message.slice(0, 90)}`);
-  } finally {
-    // brief hold so a still-high feeUsd (list lag before fees reset) can't double-fire the compound
-    setTimeout(() => compounding.delete(it.tokenId), 120_000);
-    releaseWallet();
-  }
 }
 

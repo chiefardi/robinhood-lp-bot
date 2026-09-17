@@ -82,6 +82,11 @@ const RadarSchema = z.object({
 // unattended). Default OFF with conservative caps; every gate must pass.
 const AutoLpSchema = z.object({
   enabled: z.boolean().default(false),
+  entryPaused: z.boolean().default(true),
+  sizeUsd: z.number().finite().positive().max(30).default(30),
+  trailActivationPct: z.number().finite().nonnegative().default(0),
+  trailGivebackPct: z.number().finite().positive().default(5),
+  exitCostBufferUsd: z.number().finite().nonnegative().default(0.25),
   sizeEth: z.number().positive().default(0.001), // ETH per auto position
   mode: z.enum(["single", "inrange"]).default("single"), // single = rug-safe
   minScore: z.number().min(0).max(100).default(75), // radar LLM score floor
