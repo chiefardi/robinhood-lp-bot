@@ -91,6 +91,11 @@ holdings. The old optional normalization fields no longer authorize entry.
 Exact chosen-pool 5-minute and 1-hour volume must meet the configured watch
 thresholds, with nonzero buys and sells in the last five minutes. Token-wide volume
 is insufficient. These activity signals cannot establish organic volume by themselves.
+The watch scanner discovers up to 100 Robinhood tokens from GMGN's five-minute
+volume ranking on each pass, then reads each token's pools from DexScreener.
+Unavailable discovery or a failed pool lookup is logged as a scan error. The
+100-token ranking and two-minute scan cadence can miss short-lived surges; neither
+is a market-wide guarantee.
 GMGN requests are serialized and paced, with a five-minute cooldown on rate-limit
 errors. Queued/stale or unavailable data blocks entry, not a safety bypass.
 
