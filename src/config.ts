@@ -184,12 +184,12 @@ function load(): Config {
   try {
     raw = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
   } catch (e) {
-    throw new Error(`config.json tidak terbaca: ${(e as Error).message}`);
+    throw new Error(`could not read config.json: ${(e as Error).message}`);
   }
   const parsed = ConfigSchema.safeParse(raw);
   if (!parsed.success) {
     log.error("config.json invalid", parsed.error.flatten().fieldErrors);
-    throw new Error("config.json gagal validasi — cek field di atas.");
+    throw new Error("config.json validation failed — check the fields above.");
   }
   return parsed.data;
 }
@@ -262,15 +262,15 @@ export const env = {
 
 /** Fail fast at startup if a required secret is missing or malformed. */
 export function assertSecrets(): void {
-  if (!env.tgToken) throw new Error("RH_TG_TOKEN belum diset di .env");
-  if (!env.walletKey) throw new Error("RH_WALLET_KEY belum diset di .env");
+  if (!env.tgToken) throw new Error("RH_TG_TOKEN is not set in .env");
+  if (!env.walletKey) throw new Error("RH_WALLET_KEY is not set in .env");
   if (!/^0x[0-9a-fA-F]{64}$/.test(env.walletKey)) {
-    throw new Error("RH_WALLET_KEY format salah — harus 0x + 64 hex.");
+    throw new Error("Invalid RH_WALLET_KEY format — must be 0x + 64 hex characters.");
   }
   if (!env.ownerChat) {
     log.warn(
-      "RH_TG_CHAT belum diset — bot akan mengunci ke chat PERTAMA yang kirim /start, " +
-        "lalu menolak yang lain. Set RH_TG_CHAT di .env untuk mengunci permanen.",
+      "RH_TG_CHAT is not set — the bot will lock to the FIRST chat that sends /start, " +
+        "then reject all others. Set RH_TG_CHAT in .env to lock it permanently.",
     );
   }
 }

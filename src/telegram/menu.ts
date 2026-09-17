@@ -6,10 +6,10 @@
 
 export const MENU_KEYBOARD = {
   keyboard: [
-    ["📋 Posisi", "📒 Ledger", "💰 PnL"],
-    ["🧪 Screen", "🔍 Scan", "📸 Kartu"],
+    ["📋 Positions", "📒 Ledger", "💰 PnL"],
+    ["🧪 Screen", "🔍 Scan", "📸 Card"],
     ["🔄 Swap", "📡 Feed", "👁 Watch"],
-    ["🤖 Auto", "👛 Wallet", "⚙️ Setting"],
+    ["🤖 Auto", "👛 Wallet", "⚙️ Settings"],
     ["🗑 Close All", "💸 Sell", "❔ Help"],
   ],
   resize_keyboard: true,
@@ -17,6 +17,10 @@ export const MENU_KEYBOARD = {
 };
 
 const MENU_MAP: Record<string, string> = {
+  "📋 Positions": "/list",
+  "📸 Card": "/card",
+  "⚙️ Settings": "/settings",
+  // Preserve routing for keyboards on messages sent before the English update.
   "📋 Posisi": "/list",
   "📒 Ledger": "/ledger",
   "💰 PnL": "/pnl",

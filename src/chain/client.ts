@@ -34,7 +34,7 @@ class SequencerRoutingProvider extends ethers.JsonRpcProvider {
           // ethers accepts an error-shaped result object here at runtime
           return (resp.error ? { id: p.id, error: resp.error } : { id: p.id, result: resp.result! }) as JsonRpcResult;
         } catch (e) {
-          log.warn(`sequencer submit gagal (${(e as Error).message}) → fallback RPC utama`);
+          log.warn(`sequencer submit failed (${(e as Error).message}) → fallback to primary RPC`);
           return (await super._send([p]))[0]!;
         }
       }),
@@ -82,7 +82,7 @@ if (usingOwnWatchRpc || usingOwnLogsRpc) log.info(`RPC split — watch:${usingOw
 let _wallet: ethers.Wallet | null = null;
 export function wallet(): ethers.Wallet {
   if (!_wallet) {
-    if (!env.walletKey) throw new Error("RH_WALLET_KEY belum diset di .env");
+    if (!env.walletKey) throw new Error("RH_WALLET_KEY is not set in .env");
     _wallet = new ethers.Wallet(env.walletKey, provider);
   }
   return _wallet;

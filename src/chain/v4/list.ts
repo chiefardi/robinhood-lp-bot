@@ -178,7 +178,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
     // Blockscout enum failed (rate-limit/lag). Positions opened OUTSIDE the bot (web UI) live ONLY in
     // this enum, so they can transiently vanish from /list until Blockscout recovers. Bot-opened ones
     // still show via the local deps union below. Surfaced so an empty /list isn't mistaken for "no pos".
-    log.warn("/list: enum NFT Blockscout kosong/gagal (rate-limit?) — andalin deps lokal (posisi web-UI bisa ke-skip sementara)");
+    log.warn("/list: Blockscout NFT enumeration empty/failed (rate limit?) — using local deposits (web-UI positions may be temporarily missed)");
   }
   ids = [...new Set([...ids, ...Object.keys(deps)])];
   // Drop tokenIds the ledger already knows are CLOSED — deps accumulates every historical mint
@@ -240,7 +240,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
         }
       }
       if (owner.toLowerCase() !== w.address.toLowerCase() || liquidity === 0n) {
-        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — baru dibuka tapi kosong/lag`);
+        if (isFresh) log.info(`/list: skip fresh #${tokenId} (liq ${liquidity} owner ${owner.slice(0, 10)}) — newly opened but empty/lagging`);
         return null;
       }
 

@@ -45,7 +45,7 @@ const SYSTEM = [
   "• smart_money_wallets ≥3 = bullish; 0 = no smart interest (bearish, not a hard stop).",
   "• rug_ratio 0-1 (>0.3 risky). top10_holder_rate 0-1 (>0.5 too concentrated). sell_tax/buy_tax are decimals (0.05 = 5%).",
   "Missing/unavailable data = uncertainty, not safety. Be conservative on thin or very-new tokens.",
-  'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<one sentence, <180 chars, state the KEY reason>"}.',
+  'Respond ONLY as compact JSON: {"score": <0-100 conviction>, "action": "ape"|"watch"|"skip", "summary": "<one sentence in English, <180 chars, state the KEY reason>"}.',
 ].join(" ");
 
 export async function scoreCandidate(c: Candidate): Promise<Verdict | null> {

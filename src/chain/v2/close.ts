@@ -38,7 +38,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
     c.token1!() as Promise<string>,
     c.balanceOf!(w.address) as Promise<bigint>,
   ]);
-  if (bal === 0n) throw new Error("LP balance 0 — nggak ada yang ditutup");
+  if (bal === 0n) throw new Error("LP balance 0 — nothing to close");
   const wethIsT0 = t0.toLowerCase() === WETH_L;
   const tokenAddr = wethIsT0 ? t1 : t0;
   const meta = await tokenMeta(tokenAddr).catch(() => ({ symbol: "?", decimals: 18 }));
@@ -50,7 +50,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
   try {
     await c.burn!.staticCall(w.address);
   } catch (e) {
-    throw new Error(`simulasi burn v2 revert: ${((e as any)?.shortMessage || (e as Error)?.message || "").slice(0, 140)}`);
+    throw new Error(`v2 burn simulation reverted: ${((e as any)?.shortMessage || (e as Error)?.message || "").slice(0, 140)}`);
   }
   const wethBefore: bigint = await weth.balanceOf!(w.address);
   const tokBefore: bigint = await erc.balanceOf!(w.address);
@@ -83,7 +83,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
         soldToken = true;
       }
     } catch (e) {
-      log.warn(`auto-sell token v2 gagal (token ditinggal di wallet): ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`v2 token auto-sell failed (token left in wallet): ${(e as Error).message.slice(0, 80)}`);
     }
   }
 
@@ -125,7 +125,7 @@ export async function closeV2Position(pairAddr: string): Promise<V2CloseResult> 
       source: "bot",
     });
   } catch (e) {
-    log.warn(`gagal tulis ledger v2 ${pairAddr.slice(0, 10)}: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`failed to write v2 ledger ${pairAddr.slice(0, 10)}: ${(e as Error).message.slice(0, 80)}`);
   }
 
   dropV2Deposit(pairAddr);

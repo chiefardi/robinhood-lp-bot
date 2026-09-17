@@ -38,7 +38,7 @@ export async function kyberRoute(tokenIn: string, tokenOut: string, amountIn: bi
     const r = await fetch(u, { headers: HEADERS, signal: AbortSignal.timeout(20_000) });
     const j: any = await r.json().catch(() => null);
     if (!r.ok || j?.code !== 0 || !j?.data?.routeSummary) {
-      log.warn(`routes gagal: ${j?.message ?? r.status}`);
+      log.warn(`routes failed: ${j?.message ?? r.status}`);
       return null;
     }
     return j.data as RouteData;
@@ -59,7 +59,7 @@ async function kyberBuild(routeSummary: any, sender: string, recipient: string, 
     });
     const j: any = await r.json().catch(() => null);
     if (!r.ok || j?.code !== 0 || !j?.data?.data) {
-      log.warn(`build gagal: ${j?.message ?? r.status}`);
+      log.warn(`build failed: ${j?.message ?? r.status}`);
       return null;
     }
     return j.data;
@@ -95,7 +95,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
     if (route) {
       built = await kyberBuild(route.routeSummary, w.address, w.address, slippageBps);
       if (built) {
-        if (attempt > 0) log.info(`kyber route ok setelah retry #${attempt}`);
+        if (attempt > 0) log.info(`kyber route ok after retry #${attempt}`);
         break;
       }
     }

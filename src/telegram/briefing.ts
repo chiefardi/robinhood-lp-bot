@@ -31,8 +31,8 @@ const dur = (ms: number | null) => {
   if (!ms || ms <= 0) return "?";
   const h = ms / 3_600_000;
   if (h < 1) return `${Math.round(ms / 60_000)}m`;
-  if (h < 24) return `${h.toFixed(1)}j`;
-  return `${(h / 24).toFixed(1)}h`;
+  if (h < 24) return `${h.toFixed(1)}h`;
+  return `${(h / 24).toFixed(1)}d`;
 };
 const clip = (s: string, n = 24) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
@@ -99,11 +99,11 @@ async function gather(): Promise<BriefData> {
   // open positions — best-effort; a slow RPC must never block the briefing
   const [v3, v4] = await Promise.all([
     listPositions().catch((e) => {
-      log.warn(`brief listPositions gagal: ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`brief listPositions failed: ${(e as Error).message.slice(0, 80)}`);
       return [] as Awaited<ReturnType<typeof listPositions>>;
     }),
     listV4Positions(0).catch((e) => {
-      log.warn(`brief listV4Positions gagal: ${(e as Error).message.slice(0, 80)}`);
+      log.warn(`brief listV4Positions failed: ${(e as Error).message.slice(0, 80)}`);
       return [] as Awaited<ReturnType<typeof listV4Positions>>;
     }),
   ]);
@@ -189,20 +189,20 @@ function llmDataBlock(d: BriefData): string {
 
 async function briefLlm(dataBlock: string): Promise<string | null> {
   if (!env.briefKey) {
-    log.info("brief LLM skip — RH_BRIEF_KEY kosong (pakai fallback deterministik)");
+    log.info("brief LLM skip — RH_BRIEF_KEY is empty (using deterministic fallback)");
     return null;
   }
   const system =
-    "Kamu analis kuantitatif buat bot liquidity-provider (LP) di DEX Uniswap v4 (chain Robinhood). " +
-    "Bot auto-hunt token, buka LP di pool fee tinggi (3-5%), lalu auto-close pas take-profit (TP), stop-loss (SL), " +
-    "keluar-range (OOR), atau volume-fade (VFADE). Kamu dikasih ringkasan aktivitas 24 jam terakhir + config strategi. " +
-    "Tulis analisa SINGKAT & TAJAM dalam Bahasa Indonesia gaya operator (lo/gue boleh), bukan formal.\n" +
-    "Format PERSIS 3 bagian, tiap bagian 1 paragraf pendek, MULAI dengan label diapit **...** :\n" +
-    "**💚 CUAN** — kenapa yang profit itu profit, entry/range-nya udah pas apa belum.\n" +
-    "**🩸 LOSS** — kenapa yang loss itu loss: apakah kita salah pasang posisi? (entry telat pas volume udah puncak? range kesempitan jadi cepet OOR? token emang jelek/rug?). Jujur, jangan sok positif.\n" +
-    "**🔧 FIX** — SATU perubahan config paling berdampak buat besok (sebut knob + angka konkret).\n" +
-    "Boleh **tebalin** nama token/angka penting. JANGAN pakai heading markdown (#) atau tag HTML. " +
-    "Pakai angka & nama token nyata dari data. Total maksimal ~180 kata, langsung insight, jangan ngulang data mentah.";
+    "You are a quantitative analyst for a liquidity-provider (LP) bot on Uniswap v4 DEX (Robinhood chain). " +
+    "The bot automatically hunts tokens, opens LP positions in high-fee pools (3-5%), and automatically closes at take-profit (TP), stop-loss (SL), " +
+    "out-of-range (OOR), or volume-fade (VFADE). You receive a summary of the last 24 hours of activity and the strategy configuration. " +
+    "Write SHORT, SHARP analysis in English only, in a direct, conversational operator style. Preserve token names and symbols exactly.\n" +
+    "Use EXACTLY 3 sections, each one short paragraph, STARTING with a label enclosed in **...**:\n" +
+    "**💚 PROFIT** — why profitable positions made money, and whether the entry and range were well placed.\n" +
+    "**🩸 LOSS** — why losing positions lost money: did we position them poorly? (late entry after peak volume? range too narrow, causing a quick OOR? poor-quality token or rug?). Be honest, not artificially positive.\n" +
+    "**🔧 FIX** — ONE configuration change with the biggest impact for tomorrow (name the setting and a concrete number).\n" +
+    "You may use **bold** for token names and key figures. Do NOT use Markdown headings (#) or HTML tags. " +
+    "Use actual figures and token names from the data. Keep the total to about 180 words maximum; give insights directly without repeating the raw data.";
   const body = JSON.stringify({
     model: env.briefModel,
     messages: [
@@ -237,11 +237,11 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
       const msg = ch.message ?? {};
       const text = String(msg.content || msg.reasoning || msg.reasoning_content || ch.text || "").trim();
       if (text) return text;
-      log.warn(`brief LLM kosong — finish=${ch.finish_reason} usage=${JSON.stringify(j?.usage)} (attempt ${attempt + 1})`);
+      log.warn(`brief LLM empty — finish=${ch.finish_reason} usage=${JSON.stringify(j?.usage)} (attempt ${attempt + 1})`);
       if (attempt === 0) continue;
       return null;
     } catch (e) {
-      log.warn(`brief LLM gagal: ${(e as Error).message.slice(0, 100)} (attempt ${attempt + 1})`);
+      log.warn(`brief LLM failed: ${(e as Error).message.slice(0, 100)} (attempt ${attempt + 1})`);
       if (attempt === 0) continue;
       return null;
     }
@@ -253,23 +253,23 @@ async function briefLlm(dataBlock: string): Promise<string | null> {
 function fallbackAnalysis(d: BriefData): string {
   const R = d.byReason;
   const out: string[] = [];
-  if (R.TP?.n) out.push(`🎯 ${R.TP.n} kena take-profit (${usd(R.TP.pnlUsd)}) — entry pas, range nangkep gerakan. Pola ini dipertahanin.`);
-  if (R.VFADE?.n) out.push(`📉 ${R.VFADE.n} exit volume-fade (${usd(R.VFADE.pnlUsd)}) — keluar sebelum pool mati, timing bagus.`);
-  if (R.SL?.n) out.push(`🛑 ${R.SL.n} kena stop-loss (${usd(R.SL.pnlUsd)}) — kemungkinan entry telat (masuk pas volume udah puncak) atau token-nya emang dump. Cek apakah minSpikeX kekecilan jadi ngejar spike yang udah lewat.`);
-  if (R.OOR?.n) out.push(`↔️ ${R.OOR.n} out-of-range (${usd(R.OOR.pnlUsd)}) — harga kabur dari band; range kemungkinan kesempitan buat volatilitas token itu${cfg.autoLp.oorAction === "close" ? " (oorAction masih close, gak re-center)" : ""}.`);
-  if (!d.closes.length) out.push("Gak ada posisi ditutup 24 jam terakhir — bot nahan atau candidate sepi.");
+  if (R.TP?.n) out.push(`🎯 ${R.TP.n} hit take-profit (${usd(R.TP.pnlUsd)}) — well-timed entry, range captured the move. Keep this pattern.`);
+  if (R.VFADE?.n) out.push(`📉 ${R.VFADE.n} volume-fade exits (${usd(R.VFADE.pnlUsd)}) — exited before the pool went inactive, good timing.`);
+  if (R.SL?.n) out.push(`🛑 ${R.SL.n} hit stop-loss (${usd(R.SL.pnlUsd)}) — possibly late entry (after volume peaked) or a token sell-off. Check whether minSpikeX is too low, causing entries to chase spikes that have already passed.`);
+  if (R.OOR?.n) out.push(`↔️ ${R.OOR.n} out-of-range (${usd(R.OOR.pnlUsd)}) — price left the band; the range may be too narrow for this token's volatility${cfg.autoLp.oorAction === "close" ? " (oorAction is still close, not recenter)" : ""}.`);
+  if (!d.closes.length) out.push("No positions closed in the last 24 hours — the bot is holding or candidates are scarce.");
 
   // one concrete suggestion, picked by the dominant failure mode
   let sugg: string;
   const sl = R.SL?.n ?? 0,
     oor = R.OOR?.n ?? 0;
-  if (oor >= 2 && oor >= sl) sugg = "Lebarin band range (mode in-range width) atau naikin oorGraceMin — mayoritas exit karena OOR = range kesempitan.";
-  else if (sl >= 2) sugg = `Perketat entry: naikin minSpikeX (skrg ${cfg.scan.minSpikeX}) biar cuma masuk pool yang lagi panas beneran, kurangi SL dari entry telat.`;
-  else if (!d.closes.length) sugg = `Longgarin gate hunt: turunin minScore (skrg ${cfg.scan.minScore}) atau naikin screenMaxMcap biar candidate lebih rame.`;
-  else if (d.wins >= d.losses && d.wins > 0) sugg = `Strategi udah net-positif — coba naikin maxOpen (skrg ${cfg.autoLp.maxOpen}) / dailyCapEth (skrg ${cfg.autoLp.dailyCapEth}) biar deploy modal lebih banyak.`;
-  else sugg = "Sample masih kecil — kumpulin data beberapa hari dulu sebelum tuning agresif.";
+  if (oor >= 2 && oor >= sl) sugg = "Widen the range band (in-range mode width) or increase oorGraceMin — most exits were OOR, suggesting the range is too narrow.";
+  else if (sl >= 2) sugg = `Tighten entries: increase minSpikeX (currently ${cfg.scan.minSpikeX}) to target genuinely active pools and reduce stop-losses from late entries.`;
+  else if (!d.closes.length) sugg = `Loosen the hunt filters: lower minScore (currently ${cfg.scan.minScore}) or raise screenMaxMcap to find more candidates.`;
+  else if (d.wins >= d.losses && d.wins > 0) sugg = `The strategy is net-positive — consider increasing maxOpen (currently ${cfg.autoLp.maxOpen}) / dailyCapEth (currently ${cfg.autoLp.dailyCapEth}) to deploy more capital.`;
+  else sugg = "The sample is still small — collect a few more days of data before aggressive tuning.";
   out.push("");
-  out.push("🧠 Saran besok: " + sugg);
+  out.push("🧠 Suggestion for tomorrow: " + sugg);
   return out.join("\n");
 }
 
@@ -280,25 +280,25 @@ export async function buildBriefing(): Promise<string> {
   const { label } = wibParts();
 
   const H: string[] = [];
-  H.push(`📋 <b>BRIEFING HARIAN</b> — <i>${esc(label)}</i>`);
+  H.push(`📋 <b>DAILY BRIEFING</b> — <i>${esc(label)}</i>`);
   H.push("━━━━━━━━━━━━━━━━━━━");
   const wl = `${d.wins}W/${d.losses}L`;
   H.push(`💰 <b>PnL 24h:</b> ${esc(usd(d.dayPnlUsd))}  (${wl}) · fee ~$${d.dayFeeUsd.toFixed(2)}`);
-  H.push(`📊 <b>Open:</b> ${d.openCount} · nilai $${d.openValUsd.toFixed(0)} · unreal ${esc(usd(d.openUnrealUsd))}${d.openOor ? ` · <b>${d.openOor} OOR</b>` : ""}`);
+  H.push(`📊 <b>Open:</b> ${d.openCount} · value $${d.openValUsd.toFixed(0)} · unreal ${esc(usd(d.openUnrealUsd))}${d.openOor ? ` · <b>${d.openOor} OOR</b>` : ""}`);
   H.push(`🏆 <b>Lifetime:</b> ${d.life.count} trade · ${d.life.winRate.toFixed(0)}% win · ${esc(usd(d.life.pnlUsd))}`);
 
   // per-position 24h closes — GROUPED by reason (with breathing room between groups) so it isn't a
   // dense wall; the flat "dead-pool" OOR parks (usually ~$0, same token 3×) collapse to one line.
   H.push("");
-  H.push(`📕 <b>DITUTUP 24 JAM</b> · ${d.closes.length} pos`);
+  H.push(`📕 <b>CLOSED IN 24 HOURS</b> · ${d.closes.length} pos`);
   if (!d.closes.length) {
-    H.push("   <i>— gak ada —</i>");
+    H.push("   <i>— none —</i>");
   } else {
     const groups: [string, string, NonNullable<LedgerEntry["reason"]>][] = [
       ["🎯", "TAKE-PROFIT", "TP"],
       ["🛑", "STOP-LOSS", "SL"],
       ["📉", "VOLUME-FADE", "VFADE"],
-      ["🐌", "FEE-MATI (rotasi)", "FVLOW"],
+      ["🐌", "INACTIVE FEES (rotation)", "FVLOW"],
       ["✋", "MANUAL", "manual"],
     ];
     for (const [emo, label, reason] of groups) {
@@ -309,7 +309,7 @@ export async function buildBriefing(): Promise<string> {
       for (const e of g.slice(0, 8)) {
         H.push(`   <code>${esc(clip(e.pair || e.sym, 22))}</code>  ${esc(pctS(e.pnlPct))} · ${esc(usd(e.pnlUsd ?? 0))} · ${esc(dur(e.heldMs))}`);
       }
-      if (g.length > 8) H.push(`   <i>…+${g.length - 8} lagi</i>`);
+      if (g.length > 8) H.push(`   <i>…+${g.length - 8} more</i>`);
     }
     // OOR cluster → one collapsed line (token×count + total pnl) instead of many repeated ~$0 rows
     const oor = d.closes.filter((e) => e.reason === "OOR");
@@ -326,22 +326,22 @@ export async function buildBriefing(): Promise<string> {
       const oorPnl = oor.reduce((s, e) => s + (e.pnlUsd ?? 0), 0);
       H.push("");
       H.push(`↔️ <b>OUT-OF-RANGE</b> · ${oor.length} · ${esc(usd(oorPnl))}`);
-      H.push(`   <i>${esc(names.join(", "))}${Object.keys(cnt).length > names.length ? "…" : ""} — range mati, ~0 fee</i>`);
+      H.push(`   <i>${esc(names.join(", "))}${Object.keys(cnt).length > names.length ? "…" : ""} — inactive range, ~0 fees</i>`);
     }
   }
 
   // open positions snapshot (compact)
   if (d.openList.length) {
     H.push("");
-    H.push("📗 <b>POSISI TERBUKA:</b>");
+    H.push("📗 <b>OPEN POSITIONS:</b>");
     for (const o of d.openList.slice(0, 12)) {
       H.push(`${o.inRange ? "🟢" : "🔴"} <b>${esc(clip(o.sym, 26))}</b> ${o.pnlUsd == null ? "" : esc(usd(o.pnlUsd))} ${o.inRange ? "" : "<i>(OOR)</i>"}`.trimEnd());
     }
-    if (d.openList.length > 12) H.push(`   <i>…+${d.openList.length - 12} lagi</i>`);
+    if (d.openList.length > 12) H.push(`   <i>…+${d.openList.length - 12} more</i>`);
   }
 
   H.push("");
-  H.push("🧠 <b>ANALISA</b>" + (env.briefKey ? "" : " <i>(rule-based)</i>") + ":");
+  H.push("🧠 <b>ANALYSIS</b>" + (env.briefKey ? "" : " <i>(rule-based)</i>") + ":");
   H.push(analysisMono(analysis));
 
   return H.join("\n");
@@ -369,13 +369,13 @@ async function sendChunked(text: string): Promise<void> {
 /** Build + push the briefing to the owner chat. `src` is just for the log line. */
 export async function runBriefing(src: "auto" | "manual" = "manual"): Promise<void> {
   try {
-    log.info(`briefing (${src}) — nyusun…`);
+    log.info(`briefing (${src}) — building…`);
     const text = await buildBriefing();
     await sendChunked(text);
-    log.info(`briefing (${src}) terkirim (${text.length} char)`);
+    log.info(`briefing (${src}) sent (${text.length} char)`);
   } catch (e) {
-    log.warn(`briefing (${src}) gagal: ${(e as Error).message.slice(0, 120)}`);
-    if (src === "manual") await send(`❌ Briefing gagal: ${esc((e as Error).message.slice(0, 120))}`);
+    log.warn(`briefing (${src}) failed: ${(e as Error).message.slice(0, 120)}`);
+    if (src === "manual") await send(`❌ Briefing failed: ${esc((e as Error).message.slice(0, 120))}`);
   }
 }
 
@@ -405,5 +405,5 @@ export function startBriefingScheduler(): void {
   // today. Simplest correct behaviour: leave persisted value as-is; empty → first tick after 7am fires.
   setInterval(tick, 5 * 60_000); // check every 5 min
   setTimeout(tick, 20_000); // and once shortly after boot (catch-up if we're already past 7am)
-  log.info(`briefing scheduler aktif (07:00 WIB) — last=${lastFiredWib || "belum pernah"}`);
+  log.info(`briefing scheduler active (07:00 WIB) — last=${lastFiredWib || "never"}`);
 }

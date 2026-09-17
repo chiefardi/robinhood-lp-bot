@@ -28,7 +28,7 @@ async function runAuto(candidate: Candidate, verdict: Verdict | null): Promise<v
 /**
  * Does the screening verdict REJECT this candidate? A funded 3-5% pool isn't enough — the token
  * must also pass screening. This is why RIALTOES leaked before: it HAD a 5% pool with volume, but
- * the radar said SKIP (GMGN honeypot). "lolos screening + tx rame + pool fee 3-5%" needs all three.
+ * the radar said SKIP (GMGN honeypot). "passed screening + active transactions + 3-5% pool fee" needs all three.
  */
 function screenBlocks(verdict: Verdict | null): boolean {
   const v = verdict?.llm;
@@ -98,7 +98,7 @@ export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool):
   // 3-5% candidate outside the LLM top-N is still eligible for auto-add (screen already vetted it).
   const action = r.verdict ?? (r.score >= 75 ? "ape" : r.score >= cfg.scan.minScore ? "watch" : "skip");
   const verdict: Verdict = {
-    llm: { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community} (heuristik)` },
+    llm: { action, score: r.score, summary: r.thesis ?? `${r.kind} · ${r.community} (heuristic)` },
     gmgn: null,
   };
   await runAuto(candidate, verdict);

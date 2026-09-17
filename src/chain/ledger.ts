@@ -98,7 +98,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
     const lg: any = await fetch(`${blockscout}/api/v2/transactions/${t.hash}/logs`, {
       signal: AbortSignal.timeout(20_000),
     }).then((x) => x.json()).catch(() => null);
-    if (++done % 30 === 0) onProgress(`baca event… ${done}/${npmTxs.length}`);
+    if (++done % 30 === 0) onProgress(`reading events… ${done}/${npmTxs.length}`);
     const ts = Number(t.timeStamp) * 1000;
     for (const l of lg?.items ?? []) {
       if (l.address?.hash?.toLowerCase() !== NPM_L) continue;
@@ -160,7 +160,7 @@ export async function backfillLedger(onProgress: (msg: string) => void = () => {
   });
 
   const ids = Object.keys(P).filter((id) => P[id]!.closedAt && P[id]!.col0 + P[id]!.col1 > 0n);
-  onProgress(`nilai ${ids.length} posisi tertutup…`);
+  onProgress(`value ${ids.length} closed positions…`);
 
   interface Raw {
     id: string; p: Agg; tokAddr: string; tm: { symbol: string; decimals: number };

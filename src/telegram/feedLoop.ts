@@ -21,7 +21,7 @@ export async function startFeed(): Promise<void> {
   try {
     await monitor.start();
   } catch (e) {
-    log.error(`gagal start: ${(e as Error).message}`);
+    log.error(`failed to start: ${(e as Error).message}`);
     monitor = null;
   }
 }

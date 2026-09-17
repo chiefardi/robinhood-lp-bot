@@ -98,7 +98,7 @@ const toEthStr = (n: number): string | null => {
 // ══════════ open flow ══════════
 
 export async function onCA(addr: string): Promise<void> {
-  await send(`🔎 <b>Cari pool v3 + v4</b> di Robinhood Chain\n<code>${addr}</code>`);
+  await send(`🔎 <b>Finding v3 + v4 pools</b> on Robinhood Chain\n<code>${addr}</code>`);
   let meta: TokenMeta;
   const all: UPool[] = [];
   // Hard-cap each read so one slow/unresponsive source (a stalled RPC, Blockscout getLogs "suka
@@ -113,7 +113,7 @@ export async function onCA(addr: string): Promise<void> {
     // (ethers only aborts an RPC after minutes). Cap it; on timeout, bail with a retry hint.
     const m = await to(tokenMeta(addr).catch(() => null), 8000, null);
     if (!m) {
-      await send(`⌛ RPC lambat — metadata token belum kebaca. Paste ulang sebentar lagi.`);
+      await send(`⌛ Slow RPC — token metadata is not available yet. Paste the address again shortly.`);
       return;
     }
     meta = m;
@@ -149,14 +149,14 @@ export async function onCA(addr: string): Promise<void> {
     for (const p of v4) mk("v4", p.fee, "ETH", v4TvlUsd(p, px), p.poolId, { v4: p });
     for (const p of v4usd) mk("v4", p.fee, "USDG", v4TvlUsd(p, px), p.poolId, { v4: p });
   } catch (e) {
-    await send(`❌ Gagal baca token/pool: ${short(e, 80)}`);
+    await send(`❌ Failed to read token/pool: ${short(e, 80)}`);
     return;
   }
   if (!all.length) {
     await send(
       timedOut
-        ? `⌛ RPC lambat — pool ${esc(meta.symbol)} belum kebaca semua. Paste ulang sebentar lagi (percobaan ke-2 lebih cepet — hasilnya di-cache).`
-        : `⚠️ Tidak ada pool ${esc(meta.symbol)} (v3 WETH, v4 ETH/USDG). Belum bisa LP.`,
+        ? `⌛ Slow RPC — not all ${esc(meta.symbol)} pools could be read. Paste the address again shortly (the second attempt is faster thanks to cached results).`
+        : `⚠️ No ${esc(meta.symbol)} pools found (v3 WETH, v4 ETH/USDG). LP is not available yet.`,
     );
     return;
   }
@@ -176,7 +176,7 @@ export async function onCA(addr: string): Promise<void> {
   let note = "";
   if (!pools.length) {
     pools = [...all].sort((a, b) => active(b) - active(a)).slice(0, 3);
-    note = `\n⚠️ Semua pool < ${fmtUsdShort(min)} liq &amp; vol — nampilin 3 teraktif (tipis, hati-hati).`;
+    note = `\n⚠️ All pools have liq &amp; vol < ${fmtUsdShort(min)} — showing the 3 most active (thin liquidity, use caution).`;
   }
   const dropped = all.length - pools.length;
   pending = { token: addr, meta, pools };
@@ -206,11 +206,11 @@ export async function onCA(addr: string): Promise<void> {
   for (let i = 0; i < pools.length; i += 5) {
     numBtns.push(pools.slice(i, i + 5).map((_, j) => ({ text: `${i + j + 1}`, callback_data: `pool:${i + j}` })));
   }
-  const dropLine = dropped > 0 && !note ? ` · +${dropped} disembunyiin` : "";
+  const dropLine = dropped > 0 && !note ? ` · +${dropped} hidden` : "";
   await send(
-    `🦄 <b>Pool ${esc(meta.symbol)}</b>  ·  ${pools.length} pool  ·  urut volume${dropLine}${note}\n\n` +
+    `🦄 <b>${esc(meta.symbol)} pools</b>  ·  ${pools.length} pools  ·  sorted by volume${dropLine}${note}\n\n` +
       `${body}\n\n` +
-      `<i>🔥 = ada volume nyata (worth) · n/a = belum ke-index (sepi/baru).\nPilih nomer di bawah 👇</i>`,
+      `<i>🔥 = real trading volume · n/a = not indexed yet (quiet/new).\nChoose a number below 👇</i>`,
     { reply_markup: { inline_keyboard: numBtns } },
   );
 }
@@ -251,29 +251,29 @@ export async function onPick(idx: number, mid: number): Promise<void> {
 
   const reuseLine =
     tokUi > 0 && (p.version === "v4" || p.version === "v2")
-      ? `♻️ <b>${tokUi.toPrecision(4)} ${esc(pending.meta.symbol)}</b> udah di wallet — bakal <b>dipake ulang</b> (nggak beli lagi).`
+      ? `♻️ <b>${tokUi.toPrecision(4)} ${esc(pending.meta.symbol)}</b> already in the wallet — will be <b>reused</b> (no additional purchase).`
       : "";
-  const balLine = balanced > 0 ? `⚖️ Buat <b>dual-side seimbang</b> sama token itu: pasang <b>~${balanced.toFixed(5)} ETH</b>.` : "";
+  const balLine = balanced > 0 ? `⚖️ For a <b>balanced dual-side</b> position with those tokens: use <b>~${balanced.toFixed(5)} ETH</b>.` : "";
   const showUsdgBtn = isUsdPool && usdgUi >= 1;
   const usdgLine = showUsdgBtn
-    ? `💵 <b>$${usdgUi.toFixed(2)} USDG</b> udah di wallet — tap tombol buat <b>single-side tanpa swap / tanpa input</b>.`
+    ? `💵 <b>$${usdgUi.toFixed(2)} USDG</b> already in the wallet — tap below for <b>single-side with no swap / no amount entry</b>.`
     : "";
   const kbRows: { text: string; callback_data: string }[][] = [];
-  if (balanced > 0) kbRows.push([{ text: `⚖️ Dual-side seimbang (~${balanced.toFixed(4)} Ξ)`, callback_data: "ballp" }]);
-  if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side pakai USDG wallet ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
+  if (balanced > 0) kbRows.push([{ text: `⚖️ Balanced dual-side (~${balanced.toFixed(4)} Ξ)`, callback_data: "ballp" }]);
+  if (showUsdgBtn) kbRows.push([{ text: `💵 Single-side using wallet USDG ($${usdgUi.toFixed(2)})`, callback_data: "usdgw" }]);
   const extra = kbRows.length ? { reply_markup: { inline_keyboard: kbRows } } : {};
   await edit(
     mid,
     [
-      `<b>${esc(pending.meta.symbol)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% dipilih.`,
+      `<b>${esc(pending.meta.symbol)}</b> · <b>${p.version.toUpperCase()}</b> fee ${(p.fee / 10000).toFixed(2)}% selected.`,
       b
-        ? `Saldo bisa di-LP: <b>${usableEth(b).toFixed(5)} ETH</b>  <i>(WETH ${Number(b.weth).toFixed(4)} + ETH ${Number(b.eth).toFixed(4)})</i>`
+        ? `Available for LP: <b>${usableEth(b).toFixed(5)} ETH</b>  <i>(WETH ${Number(b.weth).toFixed(4)} + ETH ${Number(b.eth).toFixed(4)})</i>`
         : "",
       reuseLine,
       balLine,
       usdgLine,
       ``,
-      `💬 <b>Ketik jumlah ETH</b> yang mau di-LP (contoh: <code>0.005</code>)${kbRows.length ? " — atau tap tombol di bawah." : ""}`,
+      `💬 <b>Enter the ETH amount</b> to provide as liquidity (example: <code>0.005</code>)${kbRows.length ? " — or tap a button below." : ""}`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -289,7 +289,7 @@ export async function onBalancedLp(mid: number): Promise<void> {
   if (!amt || (b && Number(amt) > usableEth(b) + 1e-9)) {
     pending.awaitingAmount = true;
     await send(
-      `⚠️ Nilai dual-side seimbang (${pending.balancedEth}) nggak valid / lebih gede dari saldo (${b ? usableEth(b).toFixed(5) : "?"} ETH). Ketik jumlah ETH manual aja (contoh: <code>0.005</code>).`,
+      `⚠️ The balanced dual-side amount (${pending.balancedEth}) is invalid / exceeds the available balance (${b ? usableEth(b).toFixed(5) : "?"} ETH). Enter an ETH amount manually (example: <code>0.005</code>).`,
     );
     return;
   }
@@ -309,7 +309,7 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
   if (!pending?.chosen) return;
   const isUsd = pending.chosen.v4?.quote === "usd" || pending.chosen.v3?.quote === "usd";
   if (!isUsd) {
-    await send("Pool ini bukan pair USDG — pakai input ETH biasa.");
+    await send("This pool is not a USDG pair — use the standard ETH amount entry.");
     return;
   }
   const [usdgRaw, b, px] = await Promise.all([
@@ -319,22 +319,22 @@ export async function onUseWalletUsdg(mid: number): Promise<void> {
   ]);
   const usdgUi = Number(ethers.formatUnits(usdgRaw, 6));
   if (usdgUi < 1) {
-    await send(`USDG di wallet cuma $${usdgUi.toFixed(2)} — kurang buat single-side. Input ETH manual aja.`);
+    await send(`Only $${usdgUi.toFixed(2)} USDG in the wallet — not enough for single-side. Enter an ETH amount manually.`);
     return;
   }
   if (b && Number(b.eth) < GAS_RESERVE) {
-    await send(`⚠️ ETH native ${Number(b.eth).toFixed(5)} < gas reserve ${GAS_RESERVE} — mint tetep butuh gas. Isi dikit ETH native dulu.`);
+    await send(`⚠️ Native ETH ${Number(b.eth).toFixed(5)} < gas reserve ${GAS_RESERVE} — minting still requires gas. Add some native ETH first.`);
     return;
   }
   if (!(px > 0)) {
-    await send("⚠️ Harga ETH/USD lagi gak kebaca — coba lagi bentar (butuh buat sizing USDG).");
+    await send("⚠️ ETH/USD price is unavailable — try again shortly (needed to size the USDG position).");
     return;
   }
   // USD → ETH-equivalent budget so the mint fn's target ≈ held USDG → reuse buys nothing (no swap).
   pending.ethAmt = toEthStr(usdgUi / px) ?? String(usdgUi / px);
   pending.awaitingAmount = false;
   const feePct = (pending.chosen.fee / 10000).toFixed(2);
-  await edit(mid, `⏳ <b>Single-side USDG pakai $${usdgUi.toFixed(2)} dari wallet…</b> (no swap · fee ${feePct}%)`);
+  await edit(mid, `⏳ <b>Single-side USDG using $${usdgUi.toFixed(2)} from the wallet…</b> (no swap · fee ${feePct}%)`);
   if (pending.chosen.version === "v4") return onMintV4(mid, "v4us");
   return onMintV3Usdg(mid, true);
 }
@@ -343,19 +343,19 @@ export async function onAmount(text: string): Promise<void> {
   if (!pending?.awaitingAmount || !pending.chosen) return;
   const eth = parseFloat(text);
   if (!(eth > 0)) {
-    await send("Masukin angka ETH yang bener, contoh: 0.005");
+    await send("Enter a valid ETH amount, for example: 0.005");
     return;
   }
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
     await send(
-      `⚠️ Kegedean. Yang bisa di-LP cuma ${usableEth(b).toFixed(5)} ETH (WETH ${Number(b.weth).toFixed(4)} + ETH ${Number(b.eth).toFixed(4)}, sisain gas). Ketik lebih kecil.`,
+      `⚠️ Amount too large. Only ${usableEth(b).toFixed(5)} ETH is available for LP (WETH ${Number(b.weth).toFixed(4)} + ETH ${Number(b.eth).toFixed(4)}, reserving gas). Enter a smaller amount.`,
     );
     return;
   }
   if (b && Number(b.eth) < GAS_RESERVE) {
     await send(
-      `⚠️ ETH native cuma ${Number(b.eth).toFixed(5)} — kurang buat gas (butuh min ${GAS_RESERVE}). Isi sedikit ETH native, ATAU unwrap dikit WETH → ETH.`,
+      `⚠️ Only ${Number(b.eth).toFixed(5)} native ETH — not enough for gas (minimum ${GAS_RESERVE}). Add some native ETH, OR unwrap some WETH → ETH.`,
     );
     return;
   }
@@ -366,11 +366,11 @@ export async function onAmount(text: string): Promise<void> {
   if (pending.chosen.version === "v2") {
     await send(
       [
-        `<b>Konfirmasi LP · Uniswap v2</b>`,
+        `<b>Confirm LP · Uniswap v2</b>`,
         `${esc(pending.meta.symbol)} · fee <b>0.30%</b> · deposit <b>${eth} ETH</b> · full-range`,
         ``,
-        `🎯 v2 selalu <b>both-sided 50/50</b>: bot swap ~separuh ETH → ${esc(pending.meta.symbol)}, sisanya jadi pasangan LP. <b>Fee jalan LANGSUNG.</b>`,
-        `⚠️ Langsung pegang token (rug = rugi ~separuh). Nggak ada single-side di v2.`,
+        `🎯 v2 is always <b>both-sided 50/50</b>: the bot swaps ~half the ETH → ${esc(pending.meta.symbol)}, pairing the rest in the LP. <b>Fees start IMMEDIATELY.</b>`,
+        `⚠️ Immediate token exposure (a rug means losing ~half). Single-side is not available on v2.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -391,12 +391,12 @@ export async function onAmount(text: string): Promise<void> {
     if (isUsd) {
       await send(
         [
-          `<b>Konfirmasi LP · Uniswap v4 · USDG</b> 🦄`,
+          `<b>Confirm LP · Uniswap v4 · USDG</b> 🦄`,
           `${esc(pending.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
           ``,
-          `🎯 <b>In-range (farming)</b> — beli USDG + ${esc(pending.meta.symbol)} dari ETH (Kyber), mint both-sided. <b>Fee ${feePct}% jalan LANGSUNG.</b> Langsung pegang token (rug = rugi).`,
+          `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(pending.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>The ${feePct}% fee starts IMMEDIATELY.</b> Immediate token exposure (a rug means a loss).`,
           ``,
-          `🛡 <b>Single-side USDG</b> — parkir <b>USDG doang (0 token)</b>, range di sisi USDG. Fee cuma pas ${esc(pending.meta.symbol)} <b>PUMP</b> masuk range. Rug-safe: kalo token dump, USDG lo utuh.`,
+          `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees only when ${esc(pending.meta.symbol)} <b>PUMPS</b> into range. Rug-safe: if the token dumps, your USDG stays intact.`,
         ].join("\n"),
         {
           reply_markup: {
@@ -412,12 +412,12 @@ export async function onAmount(text: string): Promise<void> {
     }
     await send(
       [
-        `<b>Konfirmasi mint · Uniswap v4</b> 🦄`,
+        `<b>Confirm mint · Uniswap v4</b> 🦄`,
         `${esc(pending.meta.symbol)} · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b> · pair native ETH`,
         ``,
-        `🎯 <b>In-range (farming)</b> — beli token via rute terbaik (Kyber), mint di sekitar harga. <b>Fee ${feePct}% jalan LANGSUNG.</b> Tapi langsung pegang token (rug = rugi ~separuh).`,
+        `🎯 <b>In-range (farming)</b> — buy tokens through the best route (Kyber), then mint around the current price. <b>The ${feePct}% fee starts IMMEDIATELY.</b> Immediate token exposure (a rug means losing ~half).`,
         ``,
-        `🛡 <b>Single-side ETH</b> — parkir ETH, range di atas harga. Fee cuma pas harga NAIK masuk range. Aman dari rug.`,
+        `🛡 <b>Single-side ETH</b> — park ETH, with the range above the current price. Fees only when the price RISES into range. Rug-safe.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -437,12 +437,12 @@ export async function onAmount(text: string): Promise<void> {
     const feePct = (pending.chosen.fee / 10000).toFixed(2);
     await send(
       [
-        `<b>Konfirmasi LP · Uniswap v3 · USDG</b>`,
+        `<b>Confirm LP · Uniswap v3 · USDG</b>`,
         `${esc(pending.meta.symbol)}/USDG · fee <b>${feePct}%</b> · deposit <b>${eth} ETH</b>`,
         ``,
-        `🎯 <b>In-range (farming)</b> — beli USDG + ${esc(pending.meta.symbol)} dari ETH (Kyber), mint both-sided. <b>Fee ${feePct}% jalan LANGSUNG.</b> Langsung pegang token (rug = rugi).`,
+        `🎯 <b>In-range (farming)</b> — buy USDG + ${esc(pending.meta.symbol)} with ETH (Kyber), then mint both-sided. <b>The ${feePct}% fee starts IMMEDIATELY.</b> Immediate token exposure (a rug means a loss).`,
         ``,
-        `🛡 <b>Single-side USDG</b> — parkir <b>USDG doang (0 token)</b>, range di sisi USDG. Fee cuma pas ${esc(pending.meta.symbol)} <b>PUMP</b> masuk range. Rug-safe: kalo token dump, USDG lo utuh.`,
+        `🛡 <b>Single-side USDG</b> — park <b>USDG only (0 tokens)</b>, with the range on the USDG side. Fees only when ${esc(pending.meta.symbol)} <b>PUMPS</b> into range. Rug-safe: if the token dumps, your USDG stays intact.`,
       ].join("\n"),
       {
         reply_markup: {
@@ -466,16 +466,16 @@ export async function onAmount(text: string): Promise<void> {
   const rng = (p: typeof pS): string => (p ? `${fmtMcap(p.rangeMcapLow)} → ${fmtMcap(p.rangeMcapHigh)}` : "?");
   await send(
     [
-      `<b>Konfirmasi mint · Uniswap v3</b>`,
+      `<b>Confirm mint · Uniswap v3</b>`,
       `${esc(pending.meta.symbol)} · fee ${(pending.chosen.fee / 10000).toFixed(2)}% · deposit <b>${eth} ETH</b> · width ${cfg.lp.widthPct}%`,
       pS ? `📊 MCAP now: <b>${fmtMcap(pS.mcapNow)}</b>` : "",
       ``,
       `🛡 <b>Single-side ETH</b> — range ${rng(pS)}`,
-      `   0% token. Fee jalan cuma kalau MCAP masuk range. Aman dari rug.`,
+      `   0% tokens. Fees only when MCAP enters the range. Rug-safe.`,
       ``,
       `🎯 <b>In-range</b> — range ${rng(pI)}`,
-      `   swap ~<b>${pI?.swapPct ?? "?"}%</b> modal → ${esc(pending.meta.symbol)} duluan. Fee LANGSUNG jalan,`,
-      `   tapi lu langsung pegang token (rug = rugi ${pI?.swapPct ?? "?"}% instan).`,
+      `   swap ~<b>${pI?.swapPct ?? "?"}%</b> of capital → ${esc(pending.meta.symbol)} first. Fees start IMMEDIATELY,`,
+      `   with immediate token exposure (a rug means an instant ${pI?.swapPct ?? "?"}% loss).`,
     ]
       .filter(Boolean)
       .join("\n"),
@@ -522,7 +522,7 @@ export async function onMint(mid: number, action = "single"): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ Mint gagal: ${short(e, 160)}`);
+    await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -540,7 +540,7 @@ async function onMintV3Usdg(mid: number, single = false): Promise<void> {
       [
         `✅ <b>${esc(sym)}/USDG #${r.tokenId ?? "?"}</b> [v3] ${single ? "🛡 SINGLE-SIDE USDG" : "🎯 IN-RANGE (farming)"}`,
         r.wrapHash ? `wrap: <a href="${explorerTx(r.wrapHash)}">tx</a>` : "",
-        r.swapHash ? `beli USDG (Kyber): <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
+        r.swapHash ? `buy USDG (Kyber): <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
         `pool fee <b>${feePct}%</b> · range tick ${r.tickLower}..${r.tickUpper}`,
         `deposit ${r.depositEth}Ξ · ${esc(r.side)}`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
@@ -549,7 +549,7 @@ async function onMintV3Usdg(mid: number, single = false): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ Mint gagal: ${short(e, 160)}`);
+    await send(`❌ Mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -561,7 +561,7 @@ async function onMintV4(mid: number, action: string): Promise<void> {
   const v4pool = pending.chosen.v4;
   const usdgSingle = isUsd && action === "v4us";
   const inR = isUsd ? !usdgSingle : action === "v4r" || action === "inrange"; // ETH: v4r/inrange = farming
-  await edit(mid, `⏳ <b>Minting v4 ${pending.ethAmt} ETH…</b> ${usdgSingle ? "(Kyber → USDG → single-side)" : isUsd ? "(Kyber → USDG+token → mint)" : inR ? "(swap → Permit2 → mint in-range)" : "(simulasi → mint single-side)"}`);
+  await edit(mid, `⏳ <b>Minting v4 ${pending.ethAmt} ETH…</b> ${usdgSingle ? "(Kyber → USDG → single-side)" : isUsd ? "(Kyber → USDG+token → mint)" : inR ? "(swap → Permit2 → mint in-range)" : "(simulate → mint single-side)"}`);
   try {
     const { openV4SingleSide, openV4InRange, openV4UsdgInRange, openV4UsdgSingleSide } = await import("../chain/v4/mint.js");
     const r = usdgSingle
@@ -580,13 +580,13 @@ async function onMintV4(mid: number, action: string): Promise<void> {
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · range tick ${r.tickLower}..${r.tickUpper}`,
         `deposit ${r.depositEth}Ξ`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
-        `Tutup: <code>/v4close ${r.tokenId}</code>`,
+        `Close: <code>/v4close ${r.tokenId}</code>`,
       ]
         .filter(Boolean)
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ v4 mint gagal: ${short(e, 160)}`);
+    await send(`❌ v4 mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -611,7 +611,7 @@ async function onMintV2(mid: number): Promise<void> {
         .join("\n"),
     );
   } catch (e) {
-    await send(`❌ v2 LP gagal: ${short(e, 160)}`);
+    await send(`❌ v2 LP failed: ${short(e, 160)}`);
   }
 }
 
@@ -633,7 +633,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
     return;
   }
   if (!mid) {
-    const m = await send("⏳ Memuat posisi…");
+    const m = await send("⏳ Loading positions…");
     mid = m?.result?.message_id ?? null;
   }
   const out = (txt: string, extra?: Record<string, unknown>) => (mid ? edit(mid, txt, extra) : send(txt, extra));
@@ -656,7 +656,7 @@ export async function onList(mid: number | null = null, force = false): Promise<
   const rows = rowsRes.r;
   const refreshBtn = [{ text: "🔄 Refresh", callback_data: "refresh" }];
   if (!rows.length && !v4rows.length) {
-    await out("Tidak ada posisi LP terbuka (v3/v4).", { reply_markup: { inline_keyboard: [refreshBtn] } });
+    await out("No open LP positions (v3/v4).", { reply_markup: { inline_keyboard: [refreshBtn] } });
     return;
   }
   const px = await ethUsd().catch(() => 0);
@@ -670,22 +670,22 @@ export async function onList(mid: number | null = null, force = false): Promise<
     totDep += r.depEth || 0;
     if (r.pnlEth != null) totPnl += r.pnlEth;
     const hrs = r.ageMs ? r.ageMs / 3_600_000 : 0;
-    const rate = hrs > 0.05 && r.feeEth ? `${usd(r.feeEth / hrs)}/jam` : "—";
+    const rate = hrs > 0.05 && r.feeEth ? `${usd(r.feeEth / hrs)}/hour` : "—";
     const tag = `${r.inRange ? "🟢 IN RANGE" : "🔴 OUT OF RANGE"}${r.mode === "inrange" ? " · 🎯" : ""}`;
     if (i) T.push("");
     T.push(`${tokenEmoji(r.tokenSym)} ${r.pair ?? `${r.tokenSym}/WETH`}  ·  fee ${(r.fee / 10000).toFixed(2)}%  ·  #${r.tokenId}`);
     T.push(`   ${tag}`);
     T.push("   " + "─".repeat(34));
-    T.push(`   ${padR("modal", 7)} ${padL(r.depEth != null ? r.depEth.toFixed(6) + "Ξ" : "—", 11)}  ${padL(r.depEth != null ? usd(r.depEth) : "—", 9)}`);
-    T.push(`   ${padR("nilai", 7)} ${padL(r.valEth.toFixed(6) + "Ξ", 11)}  ${padL(usd(r.valEth), 9)}`);
+    T.push(`   ${padR("capital", 7)} ${padL(r.depEth != null ? r.depEth.toFixed(6) + "Ξ" : "—", 11)}  ${padL(r.depEth != null ? usd(r.depEth) : "—", 9)}`);
+    T.push(`   ${padR("value", 7)} ${padL(r.valEth.toFixed(6) + "Ξ", 11)}  ${padL(usd(r.valEth), 9)}`);
     T.push(`   ${padR("fee", 7)} ${padL(r.feeEth.toFixed(6) + "Ξ", 11)}  ${padL(usd(r.feeEth), 9)}`);
-    T.push(`   ${padR("umur", 7)} ${padL(fmtAge(r.ageMs) + (r.ageSource === "onchain" ? " ⛓" : ""), 11)}  ${rate}`);
+    T.push(`   ${padR("age", 7)} ${padL(fmtAge(r.ageMs) + (r.ageSource === "onchain" ? " ⛓" : ""), 11)}  ${rate}`);
     T.push(`   ${padR("MCAP", 7)} ${padL(fmtMcap(r.mcapNow), 11)}  ${r.entryMcap ? "entry " + fmtMcap(r.entryMcap) : "—"}`);
     if (r.rangeMcapHigh > 0) T.push(`   ${padR("range", 7)} ${fmtMcap(r.rangeMcapLow)} → ${fmtMcap(r.rangeMcapHigh)}`);
     if (r.pnlEth != null) {
       T.push(`   ${padR("PnL", 7)} ${padL(sg(r.pnlEth, 6) + "Ξ", 11)}  ${padL((r.pnlEth >= 0 ? "+" : "-") + "$" + Math.abs(r.pnlEth * px).toFixed(2), 9)}  ${sg(r.pnlPct ?? 0, 1)}%`);
     } else {
-      T.push(`   ${padR("PnL", 7)} — (deposit tak tercatat)`);
+      T.push(`   ${padR("PnL", 7)} — (deposit not recorded)`);
     }
   });
 
@@ -700,12 +700,12 @@ export async function onList(mid: number | null = null, force = false): Promise<
     const id = dupe[r.tokenSym]! > 1 ? ` #${r.tokenId}` : "";
     btns.push([{ text: `Close ${r.tokenSym}${id}${p}`, callback_data: `close:${r.tokenId}` }]);
   });
-  if (rows.length > 1) btns.push([{ text: `🗑🗑 CLOSE ALL (${rows.length} posisi)`, callback_data: "closeall" }]);
+  if (rows.length > 1) btns.push([{ text: `🗑🗑 CLOSE ALL (${rows.length} positions)`, callback_data: "closeall" }]);
 
   // ── v4 positions block ──
   const T4: string[] = [];
   if (v4rows.length) {
-    T4.push(`🦄 UNISWAP v4 · ${v4rows.length} posisi`);
+    T4.push(`🦄 UNISWAP v4 · ${v4rows.length} positions`);
     T4.push("─".repeat(37));
     v4rows.forEach((r, i) => {
       const vEth = px ? r.valueUsd / px : 0;
@@ -719,11 +719,11 @@ export async function onList(mid: number | null = null, force = false): Promise<
       if (i) T4.push("");
       T4.push(`${tokenEmoji(r.sym)} ${r.pair}  ·  fee ${(r.fee / 10000).toFixed(2)}%  ·  #${r.tokenId}`);
       T4.push(`   ${r.inRange ? "🟢 IN RANGE" : "🔴 OUT OF RANGE"}${r.ethPaired ? "" : " · non-ETH pair"}`);
-      T4.push(`   ${padR("nilai", 7)} $${r.valueUsd.toFixed(2)}`);
-      T4.push(`   ${padR("isi", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
+      T4.push(`   ${padR("value", 7)} $${r.valueUsd.toFixed(2)}`);
+      T4.push(`   ${padR("assets", 7)} ${r.amount0} ${r.sym0} + ${r.amount1} ${r.sym1}`);
       T4.push(`   ${padR("fee", 7)} $${r.feeUsd.toFixed(2)} earned`);
-      if (r.depEth != null) T4.push(`   ${padR("modal", 7)} ${r.depEth.toFixed(6)}Ξ (${usd(r.depEth)})`);
-      T4.push(`   ${padR("umur", 7)} ${fmtAge(r.ageMs)}`);
+      if (r.depEth != null) T4.push(`   ${padR("capital", 7)} ${r.depEth.toFixed(6)}Ξ (${usd(r.depEth)})`);
+      T4.push(`   ${padR("age", 7)} ${fmtAge(r.ageMs)}`);
     });
     const dupe4: Record<string, number> = {};
     v4rows.forEach((r) => (dupe4[r.sym] = (dupe4[r.sym] || 0) + 1));
@@ -742,16 +742,16 @@ export async function onList(mid: number | null = null, force = false): Promise<
   const totalCount = rows.length + v4rows.length;
   const S: string[] = [];
   if (totalCount > 1) {
-    S.push(`TOTAL ${totalCount} posisi  ·  v3 ${rows.length} · v4 ${v4rows.length}`);
+    S.push(`TOTAL ${totalCount} positions  ·  v3 ${rows.length} · v4 ${v4rows.length}`);
     S.push("─".repeat(37));
-    S.push(`${padR("modal", 7)} ${padL(totDep.toFixed(6) + "Ξ", 11)}  ${padL(usd(totDep), 9)}`);
-    S.push(`${padR("nilai", 7)} ${padL(totEth.toFixed(6) + "Ξ", 11)}  ${padL(usd(totEth), 9)}`);
+    S.push(`${padR("capital", 7)} ${padL(totDep.toFixed(6) + "Ξ", 11)}  ${padL(usd(totDep), 9)}`);
+    S.push(`${padR("value", 7)} ${padL(totEth.toFixed(6) + "Ξ", 11)}  ${padL(usd(totEth), 9)}`);
     S.push(`${padR("fee", 7)} ${padL(totFee.toFixed(6) + "Ξ", 11)}  ${padL(usd(totFee), 9)}`);
     S.push(`${padR("PnL", 7)} ${padL(sg(totPnl, 6) + "Ξ", 11)}  ${padL((totPnl >= 0 ? "+" : "-") + "$" + Math.abs(totPnl * px).toFixed(2), 9)}`);
   }
 
-  const jam = new Date().toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const head = `📋 <b>Posisi LP</b>${px ? ` · ETH $${px.toFixed(0)}` : ""} · <i>${jam}</i>`;
+  const jam = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const head = `📋 <b>LP Positions</b>${px ? ` · ETH $${px.toFixed(0)}` : ""} · <i>${jam}</i>`;
   const body =
     (rows.length ? pre(T.join("\n")) : "") +
     (T4.length ? pre(T4.join("\n")) : "") +
@@ -782,15 +782,15 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   const sum = ledgerSummary();
 
   if (!allEntries.length && !v4hist.length) {
-    await out("⏳ <b>Ledger kosong — rebuild dari on-chain…</b>");
+    await out("⏳ <b>Ledger empty — rebuilding from on-chain data…</b>");
     try {
       await backfillLedger();
     } catch (e) {
-      await out(`❌ Rebuild gagal: ${short(e, 90)}`);
+      await out(`❌ Rebuild failed: ${short(e, 90)}`);
       return;
     }
     if (!readLedger().length) {
-      await out("📒 Belum ada posisi LP yang pernah ditutup.\n<i>Keisi otomatis tiap lu close posisi.</i>");
+      await out("📒 No LP positions have been closed yet.\n<i>Updated automatically whenever you close a position.</i>");
       return;
     }
     return onLedger(page, mid);
@@ -808,7 +808,7 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   const slice = combined.slice(page * LEDGER_PER_PAGE, page * LEDGER_PER_PAGE + LEDGER_PER_PAGE);
   const px = await ethUsd().catch(() => 0);
   const when = (ts: number | null) =>
-    ts ? new Date(ts).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "?";
+    ts ? new Date(ts).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "?";
   const verTag = (v?: string) => (v === "v4" ? "v4 🦄" : v === "v2" ? "v2 💧" : "v3");
 
   const T: string[] = [];
@@ -825,20 +825,20 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
         // USDG-paired pools → show USD (natural unit); ETH shown as secondary
         const at = e.ethUsdAtClose || px || 0;
         const $ = (eth: number) => "$" + (eth * at).toFixed(2);
-        T.push(`   modal ${$(e.depEth ?? 0)} → balik ${$(e.outEth ?? 0)}`);
+        T.push(`   capital ${$(e.depEth ?? 0)} → returned ${$(e.outEth ?? 0)}`);
         if (e.pnlEth != null) T.push(`   PnL ${e.pnlUsd != null ? money(e.pnlUsd) : $(e.pnlEth)}  (${sg(e.pnlEth, 5)}Ξ)  ${sg(e.pnlPct ?? 0, 1)}%`);
-        else T.push(`   PnL — (modal tak tercatat)`);
+        else T.push(`   PnL — (capital not recorded)`);
       } else {
-        T.push(`   modal ${(e.depEth ?? 0).toFixed(5)}Ξ → balik ${(e.outEth ?? 0).toFixed(5)}Ξ`);
+        T.push(`   capital ${(e.depEth ?? 0).toFixed(5)}Ξ → returned ${(e.outEth ?? 0).toFixed(5)}Ξ`);
         if (e.pnlEth != null) T.push(`   PnL ${sg(e.pnlEth, 5)}Ξ  ${e.pnlUsd != null ? money(e.pnlUsd) : "—"}  ${sg(e.pnlPct ?? 0, 1)}%`);
-        else T.push(`   PnL — (modal tak tercatat)`);
+        else T.push(`   PnL — (capital not recorded)`);
       }
-      if ((e.unsoldEth ?? 0) > 0) T.push(`   🪙 nyangkut ~${(e.unsoldEth ?? 0).toFixed(5)}Ξ (blm dijual)`);
+      if ((e.unsoldEth ?? 0) > 0) T.push(`   🪙 unsold ~${(e.unsoldEth ?? 0).toFixed(5)}Ξ (not yet sold)`);
     } else if (row.v4h) {
       const c = row.v4h;
       T.push(`⬜ ${tokenEmoji(c.pair)} ${c.pair} · v4 🦄   ${n}/${combined.length}`);
       T.push(`   ${when(c.closedAt)} · #${c.tokenId} · fee ${(c.fee / 10000).toFixed(2)}%`);
-      T.push(`   PnL — (histori sblm tracking${c.depEth != null ? `, modal ${c.depEth.toFixed(5)}Ξ` : ""})`);
+      T.push(`   PnL — (history before tracking${c.depEth != null ? `, capital ${c.depEth.toFixed(5)}Ξ` : ""})`);
     }
   });
 
@@ -847,12 +847,12 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   const nV2 = allEntries.filter((e) => e.version === "v2").length;
   const net = sum.pnlEth + sum.unsoldEth;
   const S: string[] = [];
-  S.push(`${combined.length} DITUTUP · ${nV3} v3 · ${nV4} v4${nV2 ? ` · ${nV2} v2` : ""}`);
+  S.push(`${combined.length} CLOSED · ${nV3} v3 · ${nV4} v4${nV2 ? ` · ${nV2} v2` : ""}`);
   S.push("─".repeat(34));
-  S.push(`${padR("menang", 9)} ${sum.wins}W / ${sum.losses}L · ${sum.winRate.toFixed(0)}%`);
-  S.push(`${padR("modal", 9)} ${sum.depEth.toFixed(5)}Ξ · fee ${sum.feeEth.toFixed(5)}Ξ`);
+  S.push(`${padR("win rate", 9)} ${sum.wins}W / ${sum.losses}L · ${sum.winRate.toFixed(0)}%`);
+  S.push(`${padR("capital", 9)} ${sum.depEth.toFixed(5)}Ξ · fee ${sum.feeEth.toFixed(5)}Ξ`);
   S.push(`${padR("REALIZED", 9)} ${sg(sum.pnlEth, 5)}Ξ · ${money(sum.pnlUsd)}`);
-  if (sum.unsoldEth > 0) S.push(`${padR("nyangkut", 9)} +${sum.unsoldEth.toFixed(5)}Ξ · +$${(sum.unsoldEth * px).toFixed(2)}`);
+  if (sum.unsoldEth > 0) S.push(`${padR("unsold", 9)} +${sum.unsoldEth.toFixed(5)}Ξ · +$${(sum.unsoldEth * px).toFixed(2)}`);
   S.push(`${padR("NET", 9)} ${sg(net, 5)}Ξ · ${money(net * px)}`);
 
   const nav: object[] = [];
@@ -860,9 +860,9 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
   nav.push({ text: `${page + 1}/${pages}`, callback_data: `lg:${page}` });
   if (page < pages - 1) nav.push({ text: "Next ▶️", callback_data: `lg:${page + 1}` });
 
-  const head = `📒 <b>Ledger LP</b> · ${combined.length} posisi ditutup`;
+  const head = `📒 <b>LP Ledger</b> · ${combined.length} closed positions`;
   const foot = v4hist.length
-    ? `<i>Stats gabung v3+v4+v2. ${v4hist.length} posisi v4 LAMA blm direkonstruksi — tap 🔄 Rebuild.</i>`
+    ? `<i>Combined v3+v4+v2 stats. ${v4hist.length} OLD v4 positions have not been reconstructed — tap 🔄 Rebuild.</i>`
     : "";
   // 📸 card button per closed position on this page (positions with recorded PnL)
   const cardBtns: object[] = [];
@@ -878,7 +878,7 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
       inline_keyboard: [
         nav,
         ...cardBtns,
-        [{ text: "📸 Kartu portfolio", callback_data: "card" }, { text: "🔄 Rebuild on-chain", callback_data: "lgrb" }],
+        [{ text: "📸 Portfolio card", callback_data: "card" }, { text: "🔄 Rebuild on-chain", callback_data: "lgrb" }],
       ],
     },
   });
@@ -887,15 +887,15 @@ export async function onLedger(page = 0, mid: number | null = null): Promise<voi
 export async function onLedgerRebuild(mid: number): Promise<void> {
   ledgerHistCache = null; // force a fresh on-chain scan
   try {
-    const prog = (msg: string) => void edit(mid, `⏳ <b>Rebuild ledger dari on-chain</b>\n<i>${esc(msg)}</i>`).catch(() => {});
+    const prog = (msg: string) => void edit(mid, `⏳ <b>Rebuild ledger from on-chain data</b>\n<i>${esc(msg)}</i>`).catch(() => {});
     const r = await backfillLedger(prog);
     // v4 positions closed before tracking → reconstruct realized PnL from archive (historical price)
     const { backfillLedgerV4 } = await import("../chain/v4/backfill.js");
     const r4 = await backfillLedgerV4(prog).catch(() => ({ rebuilt: 0 }));
-    await edit(mid, `✅ Rebuild selesai — v3: ${r.rebuilt} · v4: ${r4.rebuilt} direkonstruksi dari on-chain.`);
+    await edit(mid, `✅ Rebuild complete — v3: ${r.rebuilt} · v4: ${r4.rebuilt} reconstructed from on-chain data.`);
     await onLedger(0);
   } catch (e) {
-    await edit(mid, `❌ Rebuild gagal: ${short(e, 100)}`);
+    await edit(mid, `❌ Rebuild failed: ${short(e, 100)}`);
   }
 }
 
@@ -911,20 +911,20 @@ export async function onScreen(arg?: string): Promise<void> {
     const { screenTokens } = await import("../radar/screen.js");
     const { results, scanned, excludedFlap, excludedUnsafe } = await screenTokens({ llm: useLlm });
     if (!scanned) {
-      await edit(mid, "🧪 GMGN nggak balikin data trending (CLI belum aktif / rate-limit). Coba lagi.");
+      await edit(mid, "🧪 GMGN returned no trending data (CLI unavailable / rate-limited). Try again.");
       return;
     }
     if (!results.length) {
-      await edit(mid, `🧪 Nggak ada token lolos filter.\n<i>scan ${scanned} · buang ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`);
+      await edit(mid, `🧪 No tokens passed the filters.\n<i>scan ${scanned} · excluded ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`);
       return;
     }
     const kindTag = (k: string) => (k === "util" ? "🛠 util" : k === "meme" ? "🐸 meme" : "❓ unclear");
-    const commTag = (c: string) => (c === "clear" ? "🟢 komun jelas" : c === "thin" ? "🟡 komun tipis" : "🔴 komun sus");
+    const commTag = (c: string) => (c === "clear" ? "🟢 clear community" : c === "thin" ? "🟡 thin community" : "🔴 suspicious community");
     const T: string[] = [];
     results.forEach((r, i) => {
       const t = r.token;
       if (i) T.push("");
-      T.push(`${i + 1}. ${tokenEmoji(t.symbol)} ${t.symbol}  ·  ${kindTag(r.kind)}  ·  skor ${r.score}${r.verdict ? " · " + r.verdict.toUpperCase() : ""}`);
+      T.push(`${i + 1}. ${tokenEmoji(t.symbol)} ${t.symbol}  ·  ${kindTag(r.kind)}  ·  score ${r.score}${r.verdict ? " · " + r.verdict.toUpperCase() : ""}`);
       T.push(`   ${commTag(r.community)} · FOMO ${r.fomo}`);
       T.push(`   mcap ${fmtMcap(t.marketCap)} · vol ${fmtMcap(t.volume)} · liq ${fmtMcap(t.liquidity)}`);
       const turn = t.liquidity > 0 ? (t.volume / t.liquidity).toFixed(0) + "×" : "?";
@@ -932,7 +932,7 @@ export async function onScreen(arg?: string): Promise<void> {
       if (r.thesis) T.push(`   💡 ${r.thesis}`);
       if (r.flags.length) T.push(`   🚩 ${r.flags.join(" · ")}`);
     });
-    const head = `🧪 <b>Screen GMGN 24h</b> — ${results.length} kandidat\n<i>scan ${scanned} · buang ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`;
+    const head = `🧪 <b>Screen GMGN 24h</b> — ${results.length} candidates\n<i>scan ${scanned} · excluded ${excludedFlap} flap · ${excludedUnsafe} unsafe</i>`;
     // LP shortcut buttons for the top 6
     const btns = results.slice(0, 6).map((r) => [
       { text: `${tokenEmoji(r.token.symbol)} LP ${r.token.symbol} (${r.score})`, callback_data: `ca:${r.token.address}` },
@@ -940,13 +940,13 @@ export async function onScreen(arg?: string): Promise<void> {
     btns.push([{ text: "🔄 Refresh", callback_data: "screen" }]);
     await edit(mid, head + "\n" + pre(T.join("\n")), { reply_markup: { inline_keyboard: btns } });
   } catch (e) {
-    await edit(mid, `❌ Screen gagal: ${short(e, 120)}`);
+    await edit(mid, `❌ Screen failed: ${short(e, 120)}`);
   }
 }
 
 export async function onScan(): Promise<void> {
   const { scanOnce } = await import("../watch/scanner.js");
-  const m = await send("🔍 Scan volume…");
+  const m = await send("🔍 Scanning volume…");
   const mid = m?.result?.message_id;
   try {
     const hits = await scanOnce((msg) => {
@@ -954,13 +954,13 @@ export async function onScan(): Promise<void> {
     });
     const { handleSpike } = await import("./pipeline.js");
     if (!hits.length) {
-      await edit(mid, "🔍 Nggak ada token yang lolos filter barusan.\n<i>(butuh 2 scan buat ngukur kenaikan — coba lagi bentar)</i>");
+      await edit(mid, "🔍 No tokens passed the filters this time.\n<i>(2 scans are needed to measure the increase — try again shortly)</i>");
       return;
     }
-    await edit(mid, `🔍 <b>${hits.length} token</b> lolos:`);
+    await edit(mid, `🔍 <b>${hits.length} tokens</b> passed:`);
     for (const h of hits) await handleSpike(h);
   } catch (e) {
-    await edit(mid, `❌ Scan gagal: ${short(e, 90)}`);
+    await edit(mid, `❌ Scan failed: ${short(e, 90)}`);
   }
 }
 
@@ -984,28 +984,28 @@ export async function onWatch(arg?: string): Promise<void> {
   }
   const T = [
     `${padR("status", 12)} ${isWatchOn() ? "ON" : "OFF"}`,
-    `${padR("scan tiap", 12)} ${w.intervalSec}s`,
+    `${padR("scan every", 12)} ${w.intervalSec}s`,
     `${padR("vol 5m min", 12)} $${(w.minVol5m / 1000).toFixed(0)}k`,
-    `${padR("naik min", 12)} ${w.riseFactor}× vs scan sebelumnya`,
+    `${padR("min rise", 12)} ${w.riseFactor}× vs previous scan`,
     `${padR("vol 1h min", 12)} $${(w.minVol1h / 1000).toFixed(0)}k`,
-    `${padR("likuid min", 12)} $${(w.minLiqUsd / 1000).toFixed(0)}k`,
-    `${padR("tax maks", 12)} ${w.maxTaxPct}%`,
-    `${padR("cooldown", 12)} ${w.cooldownMin} menit/token`,
-    `${padR("RPC", 12)} ${usingOwnWatchRpc ? "terpisah (khusus scan)" : "numpang RPC LP"}`,
+    `${padR("min liq", 12)} $${(w.minLiqUsd / 1000).toFixed(0)}k`,
+    `${padR("max tax", 12)} ${w.maxTaxPct}%`,
+    `${padR("cooldown", 12)} ${w.cooldownMin} min/token`,
+    `${padR("RPC", 12)} ${usingOwnWatchRpc ? "separate (scan only)" : "shared with LP RPC"}`,
   ];
   const top = await topVolumeNow(3).catch(() => []);
   if (top.length) {
     T.push("");
-    T.push("VOL 5m TERTINGGI SEKARANG");
+    T.push("CURRENT TOP 5m VOLUME");
     for (const t of top) {
       const pass = t.vol5m >= w.minVol5m;
       T.push(`  ${pass ? "✓" : " "} ${padR(t.symbol.slice(0, 10), 11)} $${(t.vol5m / 1000).toFixed(0)}k`);
     }
     const gap = w.minVol5m / Math.max(top[0]!.vol5m, 1);
-    T.push(gap > 1 ? `  → ambang ${gap.toFixed(1)}× di atas puncak: SEPI` : `  → ada yang lewat ambang`);
+    T.push(gap > 1 ? `  → threshold ${gap.toFixed(1)}× above the peak: QUIET` : `  → some tokens exceed the threshold`);
   }
   await send(
-    `👁 <b>Volume Watch</b>${pre(T.join("\n"))}<code>/watch on</code> · <code>/watch off</code> · <code>/scan</code> (cek sekarang)\nUbah: <code>/set vol5m 200000</code> · <code>/set rise 2</code> · <code>/set liq 100000</code>`,
+    `👁 <b>Volume Watch</b>${pre(T.join("\n"))}<code>/watch on</code> · <code>/watch off</code> · <code>/scan</code> (check now)\nChange: <code>/set vol5m 200000</code> · <code>/set rise 2</code> · <code>/set liq 100000</code>`,
   );
 }
 
@@ -1016,7 +1016,7 @@ export async function onFeed(arg?: string): Promise<void> {
     cfg.feed.enabled = true;
     persist();
     await startFeed();
-    await send("📡 Feed monitor <b>ON</b> — deteksi token baru + posisi out-of-range real-time.");
+    await send("📡 Feed monitor <b>ON</b> — real-time detection of new tokens + out-of-range positions.");
     return;
   }
   if (arg === "off") {
@@ -1041,17 +1041,17 @@ export async function onFeed(arg?: string): Promise<void> {
     `${padR("radar GMGN", 16)} ${r.useGmgn ? "on" : "off"}`,
     `${padR("fast-submit", 16)} ${env.fastSubmit ? "ON → sequencer" : "off (via RPC)"}`,
     ``,
-    `${padR("token dikenal", 16)} ${s.seen}`,
-    `${padR("posisi dipantau", 16)} ${s.positions}`,
-    `${padR("token baru", 16)} ${s.newTokens}`,
-    `${padR("alert range", 16)} ${s.rangeAlerts}`,
+    `${padR("known tokens", 16)} ${s.seen}`,
+    `${padR("positions tracked", 16)} ${s.positions}`,
+    `${padR("new tokens", 16)} ${s.newTokens}`,
+    `${padR("range alerts", 16)} ${s.rangeAlerts}`,
   ];
   await send(
     `📡 <b>Sequencer Feed Monitor</b>${pre(T.join("\n"))}` +
       `<code>/feed on</code> · <code>/feed off</code>\n` +
       `Toggle: <code>/set newtoken 1</code> · <code>/set posmon 1</code> · <code>/set autoclose 0</code>\n` +
       `Radar: <code>/set radar 1</code> · <code>/set gmgn 1</code>\n` +
-      `<i>⚠️ Lokal (Telkomsel) butuh RH_FEED_IP=172.66.147.70. fast-submit: RH_FAST_SUBMIT=1. radar: RH_OPENROUTER_KEY.</i>`,
+      `<i>⚠️ Local access (Telkomsel) requires RH_FEED_IP=172.66.147.70. fast-submit: RH_FAST_SUBMIT=1. radar: RH_OPENROUTER_KEY.</i>`,
   );
 }
 
@@ -1059,28 +1059,28 @@ export async function onFeed(arg?: string): Promise<void> {
 
 export async function onV4(ca?: string): Promise<void> {
   if (!ca || !/^0x[a-fA-F0-9]{40}$/.test(ca)) {
-    await send("Format: <code>/v4 0x…</code> (CA token) — liat pool v4/ETH + fee + likuiditas.");
+    await send("Format: <code>/v4 0x…</code> (token CA) — view v4/ETH pools + fees + liquidity.");
     return;
   }
-  const m = await send(`🔎 Cek pool v4 <code>${ca}</code>…`);
+  const m = await send(`🔎 Checking v4 pools <code>${ca}</code>…`);
   const mid = m?.result?.message_id;
   try {
     const { discoverV4Pools, pickV4Pool } = await import("../chain/v4/discover.js");
     const meta = await tokenMeta(ca).catch(() => null);
     const pools = await discoverV4Pools(ca);
     if (!pools.length) {
-      await edit(mid, `Nggak ada pool v4/ETH buat ${meta?.symbol ?? "token"} ini.`);
+      await edit(mid, `No v4/ETH pools found for this ${meta?.symbol ?? "token"}.`);
       return;
     }
     const T = pools
       .sort((a, b) => b.fee - a.fee)
-      .map((p) => `  ${padR((p.fee / 10000).toFixed(2) + "%", 7)} ${p.liquidity > 0n ? "✅ ada likuiditas" : "— kosong"}  tick ${p.tick}`);
+      .map((p) => `  ${padR((p.fee / 10000).toFixed(2) + "%", 7)} ${p.liquidity > 0n ? "✅ has liquidity" : "— empty"}  tick ${p.tick}`);
     const pick = pickV4Pool(pools);
     await edit(
       mid,
       `🦄 <b>Pool v4/ETH · ${esc(meta?.symbol ?? "?")}</b>${pre(T.join("\n"))}` +
-        (pick ? `Target LP (fee tertinggi + likuid): <b>${(pick.fee / 10000).toFixed(2)}%</b>\n` : "") +
-        `<i>Mint/close v4 = Fase 2 (lagi dibangun). Sekarang deteksi doang.</i>`,
+        (pick ? `LP target (highest fee + liquidity): <b>${(pick.fee / 10000).toFixed(2)}%</b>\n` : "") +
+        `<i>v4 mint/close = Phase 2 (under development). Detection only for now.</i>`,
     );
   } catch (e) {
     await edit(mid, `❌ ${short(e, 90)}`);
@@ -1092,16 +1092,16 @@ export async function onV4(ca?: string): Promise<void> {
 export async function onV4Lp(text: string): Promise<void> {
   const [, ca, ethStr] = text.split(/\s+/);
   if (!ca || !/^0x[a-fA-F0-9]{40}$/.test(ca) || !ethStr || !(parseFloat(ethStr) > 0)) {
-    await send("Format: <code>/v4lp 0x… 0.001</code> — buka LP v4 single-side ETH di pool fee-tertinggi.");
+    await send("Format: <code>/v4lp 0x… 0.001</code> — open a single-side ETH v4 LP in the highest-fee pool.");
     return;
   }
   const eth = parseFloat(ethStr);
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
-    await send(`⚠️ Kegedean. Bisa di-LP cuma ${usableEth(b).toFixed(5)} ETH.`);
+    await send(`⚠️ Amount too large. Only ${usableEth(b).toFixed(5)} ETH is available for LP.`);
     return;
   }
-  const m = await send(`⏳ <b>Mint v4 ${eth} ETH…</b> (discover pool → simulasi → mint native ETH)`);
+  const m = await send(`⏳ <b>Mint v4 ${eth} ETH…</b> (discover pool → simulate → mint native ETH)`);
   const mid = m?.result?.message_id;
   try {
     const { openV4SingleSide } = await import("../chain/v4/mint.js");
@@ -1109,15 +1109,15 @@ export async function onV4Lp(text: string): Promise<void> {
     await edit(
       mid,
       [
-        `✅ <b>v4 LP dibuka</b> #${r.tokenId ?? "?"} 🦄`,
+        `✅ <b>v4 LP opened</b> #${r.tokenId ?? "?"} 🦄`,
         `pool fee <b>${(r.fee / 10000).toFixed(2)}%</b> · single-side ETH`,
         `range tick ${r.tickLower}..${r.tickUpper} · deposit ${r.depositEth}Ξ`,
         `mint: <a href="${explorerTx(r.txHash)}">tx</a>`,
-        `Tutup: <code>/v4close ${r.tokenId}</code>`,
+        `Close: <code>/v4close ${r.tokenId}</code>`,
       ].join("\n"),
     );
   } catch (e) {
-    await edit(mid, `❌ v4 mint gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v4 mint failed: ${short(e, 160)}`);
   }
 }
 
@@ -1137,12 +1137,12 @@ export async function onV4Close(text: string): Promise<void> {
       mid,
       [
         `✅ <b>v4 #${tokenId} closed</b> · pool fee ${(r.fee / 10000).toFixed(2)}%`,
-        `Balik: ${r.recv0 > 0 ? `${r.recv0.toFixed(6)} ${r.sym0}` : ""}${r.recv0 > 0 && r.recv1 > 0 ? " + " : ""}${r.recv1 > 0 ? `${r.recv1.toFixed(6)} ${r.sym1}` : ""}`,
+        `Returned: ${r.recv0 > 0 ? `${r.recv0.toFixed(6)} ${r.sym0}` : ""}${r.recv0 > 0 && r.recv1 > 0 ? " + " : ""}${r.recv1 > 0 ? `${r.recv1.toFixed(6)} ${r.sym1}` : ""}`,
         r.feeEth > 0 ? `🧲 fee earned: <b>${r.feeEth.toFixed(6)}Ξ</b>` : "",
         r.sweptEth && r.sweptEth > 0
-          ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}Ξ</b> (auto-swap ke ETH)${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
+          ? `💱 proceeds → <b>+${r.sweptEth.toFixed(6)}Ξ</b> (auto-swap to ETH)${r.sweepHash ? ` · <a href="${explorerTx(r.sweepHash)}">tx</a>` : ""}`
           : "",
-        r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> nggak bisa ditarik (honeypot/rug) — direlakan, ETH diselamatkan.` : "",
+        r.forfeited ? `⚠️ <b>${esc(r.forfeited)}</b> cannot be withdrawn (honeypot/rug) — forfeited, ETH recovered.` : "",
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ]
         .filter(Boolean)
@@ -1151,7 +1151,7 @@ export async function onV4Close(text: string): Promise<void> {
     const v4quote = /usdg|usd/i.test(r.pair) && !/\beth\b|weth/i.test(r.pair) ? ("usd" as const) : ("eth" as const);
     await sendCloseCard({ name: r.pair, version: "v4", quote: v4quote, depEth: r.depEth, outEth: r.outEth, feeEth: r.feeEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct });
   } catch (e) {
-    await edit(mid, `❌ v4 close gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v4 close failed: ${short(e, 160)}`);
   }
 }
 
@@ -1165,13 +1165,13 @@ export async function onV4Collect(tokenId: string): Promise<void> {
     await edit(
       mid,
       [
-        `✅ <b>Fee di-claim · v4 #${tokenId}</b>`,
-        got ? `Dapet: ${got}` : `Nggak ada fee buat di-claim.`,
+        `✅ <b>Fees claimed · v4 #${tokenId}</b>`,
+        got ? `Received: ${got}` : `No fees to claim.`,
         `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
       ].join("\n"),
     );
   } catch (e) {
-    await edit(mid, `❌ Claim fee gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ Fee claim failed: ${short(e, 160)}`);
   }
 }
 
@@ -1190,7 +1190,7 @@ export async function onV2Close(pair: string): Promise<void> {
       mid,
       [
         `✅ <b>v2 ${esc(r.sym)}/WETH closed</b>`,
-        `Balik: <b>${r.recvEth.toFixed(6)} ETH</b>${r.soldToken ? " (token dijual balik)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
+        `Returned: <b>${r.recvEth.toFixed(6)} ETH</b>${r.soldToken ? " (tokens sold back)" : r.recvToken > 0 ? ` + ${r.recvToken.toPrecision(6)} ${esc(r.sym)}` : ""}`,
         r.pnlEth != null ? `PnL: ${r.pnlEth >= 0 ? "🟩 +" : "🟥 "}${r.pnlEth.toFixed(6)}Ξ` : "",
         `burn: <a href="${explorerTx(r.txHash)}">tx</a>${r.swapHash ? ` · sell: <a href="${explorerTx(r.swapHash)}">tx</a>` : ""}`,
       ]
@@ -1199,7 +1199,7 @@ export async function onV2Close(pair: string): Promise<void> {
     );
     await sendCloseCard({ name: `${r.sym}/WETH`, version: "v2", depEth: r.depEth, outEth: r.recvEth, pnlEth: r.pnlEth });
   } catch (e) {
-    await edit(mid, `❌ v2 close gagal: ${short(e, 160)}`);
+    await edit(mid, `❌ v2 close failed: ${short(e, 160)}`);
   }
 }
 
@@ -1218,11 +1218,11 @@ export async function onAuto(arg = ""): Promise<void> {
     const armed = a.tpPct > 0 || a.slPct > 0 || a.closeOor;
     await send(
       [
-        `🤖 <b>AUTO ON</b> ⚠️ (add + close, pakai dana real)`,
-        `• <b>Auto-add</b>: buka posisi kalau kandidat lolos radar + gate (source ${a.sources.join("/")}, ${a.requireAction}≥${a.minScore}, ${a.sizeEth}Ξ ${a.mode}).`,
-        `• <b>Auto-close</b>: ${armed ? `TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"} (cek tiap ${a.manageSec}s)` : "belum di-set — pakai <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on</code>"}`,
+        `🤖 <b>AUTO ON</b> ⚠️ (add + close, using real funds)`,
+        `• <b>Auto-add</b>: open positions when candidates pass radar + gates (source ${a.sources.join("/")}, ${a.requireAction}≥${a.minScore}, ${a.sizeEth}Ξ ${a.mode}).`,
+        `• <b>Auto-close</b>: ${armed ? `TP ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"} · SL ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"} · OOR ${a.closeOor ? "on" : "off"} (check every ${a.manageSec}s)` : "not configured — use <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on</code>"}`,
         ``,
-        `Matiin: <code>/auto off</code>`,
+        `Turn off: <code>/auto off</code>`,
       ].join("\n"),
     );
     return;
@@ -1231,13 +1231,13 @@ export async function onAuto(arg = ""): Promise<void> {
     a.enabled = false;
     persist();
     stopManage();
-    await send("🤖 <b>AUTO OFF</b>. Balik ke manual (notif + tombol). Threshold TP/SL/OOR tetep kesimpen.");
+    await send("🤖 <b>AUTO OFF</b>. Back to manual (notifications + buttons). TP/SL/OOR thresholds are preserved.");
     return;
   }
   if (cmd === "tp" || cmd === "sl") {
     const v = parseFloat(parts[1] ?? "");
     if (!(v >= 0)) {
-      await send(`Format: <code>/auto ${cmd} ${cmd === "tp" ? "100" : "50"}</code> (persen, 0 = off)`);
+      await send(`Format: <code>/auto ${cmd} ${cmd === "tp" ? "100" : "50"}</code> (percent, 0 = off)`);
       return;
     }
     if (cmd === "tp") a.tpPct = v;
@@ -1245,15 +1245,15 @@ export async function onAuto(arg = ""): Promise<void> {
     persist();
     await send(
       cmd === "tp"
-        ? `🎯 Take-profit: ${v > 0 ? `posisi auto-close pas profit <b>≥ +${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (nyalain: /auto on)" : ""}`
-        : `🛑 Stop-loss: ${v > 0 ? `posisi auto-close pas rugi <b>≤ -${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (nyalain: /auto on)" : ""}`,
+        ? `🎯 Take-profit: ${v > 0 ? `auto-close positions when profit <b>≥ +${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`
+        : `🛑 Stop-loss: ${v > 0 ? `auto-close positions when loss <b>≤ -${v}%</b>` : "OFF"}.${v > 0 && !a.enabled ? " (enable: /auto on)" : ""}`,
     );
     return;
   }
   if (cmd === "oor") {
     a.closeOor = /^(on|1|true|yes)$/i.test(parts[1] ?? "");
     persist();
-    await send(`🚪 Auto-close out-of-range: <b>${a.closeOor ? "ON" : "OFF"}</b>.${a.closeOor && !a.enabled ? " (nyalain: /auto on)" : ""}`);
+    await send(`🚪 Auto-close out-of-range: <b>${a.closeOor ? "ON" : "OFF"}</b>.${a.closeOor && !a.enabled ? " (enable: /auto on)" : ""}`);
     return;
   }
 
@@ -1262,10 +1262,10 @@ export async function onAuto(arg = ""): Promise<void> {
   const T = [
     `${padR("status", 13)} ${a.enabled ? "🟢 ON" : "off"}`,
     `── auto-add ──`,
-    `${padR("ukuran", 13)} ${a.sizeEth}Ξ · ${a.mode}`,
-    `${padR("trigger", 13)} ${a.requireAction} & skor ≥ ${a.minScore}`,
+    `${padR("size", 13)} ${a.sizeEth}Ξ · ${a.mode}`,
+    `${padR("trigger", 13)} ${a.requireAction} & score ≥ ${a.minScore}`,
     `${padR("source", 13)} ${a.sources.join(", ")}`,
-    `${padR("cap", 13)} ${a.maxOpen} posisi · ${a.maxPerHour}/jam · ${a.dailyCapEth}Ξ/hari`,
+    `${padR("cap", 13)} ${a.maxOpen} positions · ${a.maxPerHour}/hour · ${a.dailyCapEth}Ξ/day`,
     `── auto-close ──`,
     `${padR("take-profit", 13)} ${a.tpPct > 0 ? "+" + a.tpPct + "%" : "off"}`,
     `${padR("stop-loss", 13)} ${a.slPct > 0 ? "-" + a.slPct + "%" : "off"}`,
@@ -1273,29 +1273,29 @@ export async function onAuto(arg = ""): Promise<void> {
     `${padR("vol-fade", 13)} ${a.volFadeX > 0 ? `on (spike < ${a.volFadeX}× · age > ${a.vfadeMinAgeMin}m)` : "off"}`,
     `${padR("fee-velocity", 13)} ${a.minFeePerHourUsd > 0 ? `on (< $${a.minFeePerHourUsd}/h · age > ${a.feeGraceMin}m)` : "off"}`,
     `${padR("compound", 13)} ${a.compound ? `on (fee ≥ $${a.compoundMinUsd})` : "off"}`,
-    `${padR("cek tiap", 13)} ${a.manageSec}s`,
+    `${padR("check every", 13)} ${a.manageSec}s`,
     ``,
-    `${padR("hari ini", 13)} ${s.opensToday} open · ${s.spentToday.toFixed(4)}Ξ`,
+    `${padR("today", 13)} ${s.opensToday} open · ${s.spentToday.toFixed(4)}Ξ`,
   ];
   await send(
     `🤖 <b>Auto (add + close)</b>${pre(T.join("\n"))}` +
       `<code>/auto on</code> · <code>/auto off</code>\n` +
       `Close: <code>/auto tp 100</code> · <code>/auto sl 50</code> · <code>/auto oor on|off</code>\n` +
-      `Mode: <code>/set alpmode single</code> (rug-safe) · <code>/set alpmode inrange</code> (fee langsung)\n` +
+      `Mode: <code>/set alpmode single</code> (rug-safe) · <code>/set alpmode inrange</code> (immediate fees)\n` +
       `♻️ OOR→recenter: <code>/set alprebalance rebalance</code> · 🔁 compound fee: <code>/set alpcompound 1</code> · <code>/set alpcompoundmin 0.5</code>\n` +
       `Add: <code>/set alpsize 0.001</code> · <code>/set alpscore 75</code> · <code>/set alpmaxopen 3</code>\n` +
-      `<i>⚠️ Tx otomatis pakai dana real. ${armed ? "Auto-close ARMED." : "Auto-close belum di-set."} Auto-add butuh radar (/set radar 1).</i>`,
+      `<i>⚠️ Automatic transactions use real funds. ${armed ? "Auto-close ARMED." : "Auto-close is not configured."} Auto-add requires radar (/set radar 1).</i>`,
   );
 }
 
 // ══════════ close ══════════
 
 export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
-  await edit(mid, `Close #${tokenId} — fee/token-nya mau diapain?\n<i>(LP principal tetap balik jadi ETH)</i>`, {
+  await edit(mid, `Close #${tokenId} — what should happen to the fees/tokens?\n<i>(LP principal still returns as ETH)</i>`, {
     reply_markup: {
       inline_keyboard: [
         [{ text: "🔄 Swap token → ETH (full ETH)", callback_data: `cs:${tokenId}` }],
-        [{ text: "🪙 Simpen token (WETH + token)", callback_data: `ck:${tokenId}` }],
+        [{ text: "🪙 Keep tokens (WETH + token)", callback_data: `ck:${tokenId}` }],
       ],
     },
   });
@@ -1303,28 +1303,28 @@ export async function onCloseAsk(tokenId: string, mid: number): Promise<void> {
 
 export async function onClose(tokenId: string, mid: number, swapToken = true): Promise<void> {
   invalidateListCache();
-  await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? "(swap token→ETH)" : "(simpen token)"}`);
+  await edit(mid, `⏳ Closing #${tokenId}… ${swapToken ? "(swap token→ETH)" : "(keep tokens)"}`);
   try {
     const r = await closePosition(tokenId, { swapToken });
     const px = await ethUsd().catch(() => 0);
     const pnl =
       r.pnlEth != null
         ? `\n💰 <b>PnL ETH: ${r.pnlEth >= 0 ? "+" : ""}${r.pnlEth.toFixed(6)}Ξ</b> (${r.pnlPct! >= 0 ? "+" : ""}${r.pnlPct!.toFixed(1)}%)\n💵 <b>PnL USD: ${r.pnlEth >= 0 ? "+" : ""}$${px ? (r.pnlEth * px).toFixed(2) : "?"}</b>`
-        : `\nPnL: — (deposit tak tercatat)`;
+        : `\nPnL: — (deposit not recorded)`;
     await send(
       [
         `✅ <b>Closed #${tokenId}</b>${px ? ` · ETH $${px.toFixed(0)}` : ""}`,
-        r.heldMs != null ? `⏱ di-hold <b>${fmtAge(r.heldMs)}</b>` : "",
-        `Tarik: ${r.recvWeth.toFixed(6)} ${r.wethSym}${r.recvToken > 0 ? ` + ${r.recvToken.toFixed(2)} ${r.tokenSym}` : ""}`,
+        r.heldMs != null ? `⏱ held for <b>${fmtAge(r.heldMs)}</b>` : "",
+        `Withdrawn: ${r.recvWeth.toFixed(6)} ${r.wethSym}${r.recvToken > 0 ? ` + ${r.recvToken.toFixed(2)} ${r.tokenSym}` : ""}`,
         r.swappedWeth > 0
           ? `🔄 Swap ${r.tokenSym} → +${r.swappedWeth.toFixed(6)} WETH`
           : r.tokenStuck > 0
             ? swapToken
-              ? `⚠️ ${r.tokenStuck.toFixed(2)} ${r.tokenSym} gagal dijual (rug) — nyangkut`
-              : `🪙 ${r.tokenStuck.toFixed(2)} ${r.tokenSym} disimpen (senilai ~$${px ? ((r.valEth - r.recvWeth) * px).toFixed(2) : "?"})`
+              ? `⚠️ ${r.tokenStuck.toFixed(2)} ${r.tokenSym} could not be sold (rug) — stuck`
+              : `🪙 ${r.tokenStuck.toFixed(2)} ${r.tokenSym} kept (worth ~$${px ? ((r.valEth - r.recvWeth) * px).toFixed(2) : "?"})`
             : "",
-        `Total balik: <b>${r.valEth.toFixed(6)}Ξ / $${px ? (r.valEth * px).toFixed(2) : "?"}</b>${r.depEth != null ? ` (deposit ${r.depEth.toFixed(6)}Ξ)` : ""}${pnl}`,
-        r.topUp ? `⛽ Top-up gas: unwrap ${r.topUp.unwrapped.toFixed(5)} WETH → ETH native (${r.topUp.nativeAfter.toFixed(4)}Ξ)` : "",
+        `Total returned: <b>${r.valEth.toFixed(6)}Ξ / $${px ? (r.valEth * px).toFixed(2) : "?"}</b>${r.depEth != null ? ` (deposit ${r.depEth.toFixed(6)}Ξ)` : ""}${pnl}`,
+        r.topUp ? `⛽ Top-up gas: unwrap ${r.topUp.unwrapped.toFixed(5)} WETH → native ETH (${r.topUp.nativeAfter.toFixed(4)}Ξ)` : "",
         r.collectHash ? `tx: <a href="${explorerTx(r.collectHash)}">collect</a>${r.swapHash ? ` · <a href="${explorerTx(r.swapHash)}">swap</a>` : ""}` : "",
       ]
         .filter(Boolean)
@@ -1333,7 +1333,7 @@ export async function onClose(tokenId: string, mid: number, swapToken = true): P
     const isUsdgClose = r.wethSym === "USDG";
     await sendCloseCard({ name: isUsdgClose ? `${r.tokenSym}/USDG` : `${r.tokenSym}/WETH`, version: "v3", quote: isUsdgClose ? "usd" : "eth", depEth: r.depEth, outEth: r.valEth, pnlEth: r.pnlEth, pnlPct: r.pnlPct, heldMs: r.heldMs });
   } catch (e) {
-    await send(`❌ Close gagal: ${short(e, 120)}`);
+    await send(`❌ Close failed: ${short(e, 120)}`);
   }
 }
 
@@ -1347,11 +1347,11 @@ export async function onCloseAll(): Promise<void> {
     return;
   }
   if (!rows.length) {
-    await send("Tidak ada posisi buat ditutup.");
+    await send("No positions to close.");
     return;
   }
   const px = await ethUsd().catch(() => 0);
-  await send(`🗑🗑 <b>Menutup ${rows.length} posisi…</b> (satu per satu)`);
+  await send(`🗑🗑 <b>Closing ${rows.length} positions…</b> (one at a time)`);
   let totPnl = 0, ok = 0, fail = 0;
   for (const row of rows) {
     try {
@@ -1363,12 +1363,12 @@ export async function onCloseAll(): Promise<void> {
       );
     } catch (e) {
       fail++;
-      await send(`❌ #${row.tokenId} gagal: ${short(e, 70)}`);
+      await send(`❌ #${row.tokenId} failed: ${short(e, 70)}`);
     }
   }
   await send(
     [
-      `🏁 <b>Close ALL selesai</b> — ${ok} sukses${fail ? `, ${fail} gagal` : ""}`,
+      `🏁 <b>Close ALL complete</b> — ${ok} succeeded${fail ? `, ${fail} failed` : ""}`,
       `💰 Total PnL ETH: <b>${totPnl >= 0 ? "+" : ""}${totPnl.toFixed(6)}Ξ</b>`,
       px ? `💵 Total PnL USD: <b>${totPnl >= 0 ? "+" : ""}$${(totPnl * px).toFixed(2)}</b>` : "",
     ]
@@ -1393,7 +1393,7 @@ const fmtAmt = (n: number): string =>
 export async function onSwap(text: string): Promise<void> {
   const { kyberEnabled } = await import("../chain/kyber.js");
   if (!kyberEnabled()) {
-    await send("🔄 Swap butuh KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> belum diset di .env.");
+    await send("🔄 Swap requires KyberSwap — <code>KYBERSWAP_ROUTER_ADDRESS</code> is not set in .env.");
     return;
   }
   return text.trim().split(/\s+/).length >= 4 ? onSwapManual(text) : onSwapMenu();
@@ -1401,7 +1401,7 @@ export async function onSwap(text: string): Promise<void> {
 
 /** Auto-detect sellable tokens in the wallet → tap one → tap a %, no CA/amount typing. */
 async function onSwapMenu(): Promise<void> {
-  const m = await send("🔄 <b>Scan token di wallet…</b> <i>(ngecek rute jual tiap token, bisa ~10-20s)</i>");
+  const m = await send("🔄 <b>Scanning wallet tokens…</b> <i>(checking sell routes for each token, may take ~10-20s)</i>");
   const mid = m?.result?.message_id;
   swapFrom = null;
   const toks = await walletTokens().catch(() => [] as WalletToken[]);
@@ -1411,15 +1411,15 @@ async function onSwapMenu(): Promise<void> {
       mid,
       [
         "🔄 <b>Swap</b>",
-        "Nggak ada token (yang bisa dijual) kedetect di wallet.",
+        "No sellable tokens detected in the wallet.",
         "",
-        "Beli / manual: <code>/swap &lt;jumlah&gt; &lt;dari&gt; &lt;ke&gt;</code> (dari/ke = <b>eth</b> atau CA).",
+        "Buy / manual: <code>/swap &lt;amount&gt; &lt;from&gt; &lt;to&gt;</code> (from/to = <b>eth</b> or CA).",
       ].join("\n"),
     );
     return;
   }
   const rows = toks.map((t) => [{ text: `${tokenEmoji(t.symbol)} ${t.symbol} · ${fmtAmt(t.ui)} ($${t.usd.toFixed(2)})`, callback_data: `swf:${t.addr}` }]);
-  await edit(mid, [`🔄 <b>Swap → ETH</b>`, `Pilih token yang mau dijual (${toks.length} kedetect):`].join("\n"), {
+  await edit(mid, [`🔄 <b>Swap → ETH</b>`, `Choose a token to sell (${toks.length} detected):`].join("\n"), {
     reply_markup: { inline_keyboard: rows },
   });
 }
@@ -1428,17 +1428,17 @@ async function onSwapMenu(): Promise<void> {
 export async function onSwapFrom(addr: string, mid: number): Promise<void> {
   const t = swapTokens.find((x) => x.addr.toLowerCase() === addr.toLowerCase());
   if (!t) {
-    await edit(mid, "Token nggak kebaca lagi — kirim /swap ulang.");
+    await edit(mid, "Token is no longer available — send /swap again.");
     return;
   }
   swapFrom = t;
   await edit(
     mid,
     [
-      `🔄 <b>Jual ${tokenEmoji(t.symbol)} ${esc(t.symbol)} → ETH</b>`,
-      `Saldo: <b>${fmtAmt(t.ui)}</b> ($${t.usd.toFixed(2)}) · jual semua ≈ ${t.ethOut.toPrecision(4)} ETH`,
+      `🔄 <b>Sell ${tokenEmoji(t.symbol)} ${esc(t.symbol)} → ETH</b>`,
+      `Balance: <b>${fmtAmt(t.ui)}</b> ($${t.usd.toFixed(2)}) · sell all ≈ ${t.ethOut.toPrecision(4)} ETH`,
       ``,
-      `Mau jual berapa persen?`,
+      `What percentage would you like to sell?`,
     ].join("\n"),
     {
       reply_markup: {
@@ -1453,7 +1453,7 @@ export async function onSwapFrom(addr: string, mid: number): Promise<void> {
             { text: "💯 100%", callback_data: "swp:100" },
           ],
           [
-            { text: "🔙 Token lain", callback_data: "swap" },
+            { text: "🔙 Other tokens", callback_data: "swap" },
             { text: "❌ Cancel", callback_data: "cancel" },
           ],
         ],
@@ -1465,7 +1465,7 @@ export async function onSwapFrom(addr: string, mid: number): Promise<void> {
 /** Percentage picked (swp:<pct>) → quote via Kyber, show the ✅ Swap confirm. */
 export async function onSwapPct(pct: number, mid: number): Promise<void> {
   if (!swapFrom) {
-    await edit(mid, "Pilih token dulu — kirim /swap ulang.");
+    await edit(mid, "Choose a token first — send /swap again.");
     return;
   }
   const t = swapFrom;
@@ -1475,14 +1475,14 @@ export async function onSwapPct(pct: number, mid: number): Promise<void> {
   const bal = liveRaw > 0n ? liveRaw : t.raw;
   const amountIn = pct >= 100 ? bal : (bal * BigInt(pct)) / 100n;
   if (amountIn <= 0n) {
-    await edit(mid, "Saldo token 0 sekarang — mungkin udah kejual / kepake. Kirim /swap ulang.");
+    await edit(mid, "Token balance is now 0 — it may have been sold / used. Send /swap again.");
     return;
   }
   const { kyberRoute, routeBreakdown, KYBER_NATIVE } = await import("../chain/kyber.js");
-  await edit(mid, `🔄 Cari rute ${pct}% ${esc(t.symbol)} → ETH…`);
+  await edit(mid, `🔄 Finding a route for ${pct}% ${esc(t.symbol)} → ETH…`);
   const route = await kyberRoute(t.addr, KYBER_NATIVE, amountIn).catch(() => null);
   if (!route) {
-    await edit(mid, "❌ Kyber nggak nemu rute (likuiditas kering?).");
+    await edit(mid, "❌ Kyber found no route (no liquidity?).");
     return;
   }
   const outUi = Number(ethers.formatEther(BigInt(route.routeSummary.amountOut)));
@@ -1492,9 +1492,9 @@ export async function onSwapPct(pct: number, mid: number): Promise<void> {
   await edit(
     mid,
     [
-      `🔄 <b>Jual ${pct}% ${esc(t.symbol)}</b> = ${fmtAmt(amtUi)} ${esc(t.symbol)}`,
+      `🔄 <b>Sell ${pct}% ${esc(t.symbol)}</b> = ${fmtAmt(amtUi)} ${esc(t.symbol)}`,
       `→ ~<b>${outUi.toPrecision(6)} ETH</b>${px ? ` <i>($${(outUi * px).toFixed(2)})</i>` : ""}`,
-      `rute: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
+      `route: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
     ].join("\n"),
     { reply_markup: { inline_keyboard: [[{ text: "✅ Swap", callback_data: "swapdo" }, { text: "❌ Cancel", callback_data: "cancel" }]] } },
   );
@@ -1509,15 +1509,15 @@ async function onSwapManual(text: string): Promise<void> {
   const fromAddr = resolve(fromS);
   const toAddr = resolve(toS);
   if (!fromAddr || !toAddr) {
-    await send("Dari/ke harus <b>eth</b> atau alamat kontrak (0x… 40 hex).");
+    await send("From/to must be <b>eth</b> or a contract address (0x… 40 hex characters).");
     return;
   }
   if (fromAddr.toLowerCase() === toAddr.toLowerCase()) {
-    await send("Dari & ke sama — nggak ada yang di-swap.");
+    await send("From & to are the same — nothing to swap.");
     return;
   }
   if (!(parseFloat(amtStr) > 0)) {
-    await send("Jumlah nggak valid, contoh: <code>0.01</code>");
+    await send("Invalid amount, example: <code>0.01</code>");
     return;
   }
   const nativeIn = fromAddr.toLowerCase() === KYBER_NATIVE.toLowerCase();
@@ -1528,15 +1528,15 @@ async function onSwapManual(text: string): Promise<void> {
   try {
     amountIn = ethers.parseUnits(amtStr, fromMeta.decimals);
   } catch {
-    await send("Format jumlah salah.");
+    await send("Invalid amount format.");
     return;
   }
 
-  const m = await send("🔄 Cari rute Kyber…");
+  const m = await send("🔄 Finding a Kyber route…");
   const mid = m?.result?.message_id;
   const route = await kyberRoute(fromAddr, toAddr, amountIn).catch(() => null);
   if (!route) {
-    await edit(mid, "❌ Kyber nggak nemu rute buat pair ini (likuiditas kering?).");
+    await edit(mid, "❌ Kyber found no route for this pair (no liquidity?).");
     return;
   }
   const outRaw = BigInt(route.routeSummary.amountOut);
@@ -1547,7 +1547,7 @@ async function onSwapManual(text: string): Promise<void> {
     mid,
     [
       `🔄 <b>Swap ${esc(amtStr)} ${esc(fromMeta.symbol)} → ~${outUi.toPrecision(6)} ${esc(toMeta.symbol)}</b>${usd}`,
-      `rute: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
+      `route: <i>${esc(routeBreakdown(route.routeSummary) || "kyber")}</i> · slippage ${cfg.lp.slippagePct}%`,
     ].join("\n"),
     { reply_markup: { inline_keyboard: [[{ text: "✅ Swap", callback_data: "swapdo" }, { text: "❌ Cancel", callback_data: "cancel" }]] } },
   );
@@ -1562,15 +1562,15 @@ export async function onSwapDo(mid: number): Promise<void> {
     const { kyberSwap } = await import("../chain/kyber.js");
     const r = await kyberSwap(s.fromAddr, s.toAddr, s.amountIn);
     if (!r || r.amountOut <= 0n) {
-      await edit(mid, "❌ Swap gagal / output 0.");
+      await edit(mid, "❌ Swap failed / output 0.");
       return;
     }
     await edit(
       mid,
-      `✅ <b>Swap sukses</b> → +${Number(ethers.formatUnits(r.amountOut, s.toDec)).toPrecision(6)} ${esc(s.toSym)}\ntx: <a href="${explorerTx(r.tx)}">tx</a>`,
+      `✅ <b>Swap successful</b> → +${Number(ethers.formatUnits(r.amountOut, s.toDec)).toPrecision(6)} ${esc(s.toSym)}\ntx: <a href="${explorerTx(r.tx)}">tx</a>`,
     );
   } catch (e) {
-    await edit(mid, `❌ Swap gagal: ${short(e, 150)}`);
+    await edit(mid, `❌ Swap failed: ${short(e, 150)}`);
   }
 }
 
@@ -1584,7 +1584,7 @@ export async function onHunt(arg?: string): Promise<void> {
     cfg.scan.enabled = true;
     persist();
     startScan();
-    await send(`🎯 <b>Hunter ON</b> — scan kandidat LP tiap ${cfg.scan.intervalMin} menit (fee 3-5% + tx rame + lolos screening).`);
+    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (3-5% fees + active trading + passed screening).`);
     return;
   }
   if (a === "off") {
@@ -1595,25 +1595,25 @@ export async function onHunt(arg?: string): Promise<void> {
     return;
   }
   if (a === "now") {
-    const m = await send("🎯 Scan kandidat sekarang… <i>(GMGN trending + screening, bisa ~15-30s)</i>");
+    const m = await send("🎯 Scanning candidates now… <i>(GMGN trending + screening, may take ~15-30s)</i>");
     const mid = m?.result?.message_id;
     try {
       const r = await scanNow();
-      await edit(mid, `🎯 Scan kelar — <b>${r.scanned}</b> trending → <b>${r.found} kandidat</b> lolos (fee 3-5% + rame + screening).${r.found ? " Alert dikirim ↑" : " Gak ada yang lolos sekarang."}`);
+      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (3-5% fees + active trading + screening).${r.found ? " Alerts sent ↑" : " No candidates passed this time."}`);
     } catch (e) {
-      await edit(mid, `❌ Scan gagal: ${short(e, 100)}`);
+      await edit(mid, `❌ Scan failed: ${short(e, 100)}`);
     }
     return;
   }
   const st = scanStatus();
   await send(
     [
-      `🎯 <b>Hunter kandidat LP</b> — ${st.on ? "🟢 ON" : "🔴 OFF"}`,
-      `Kriteria: pool <b>v4 fee ${(st.feeMinPpm / 10000).toFixed(0)}-${(st.feeMaxPpm / 10000).toFixed(0)}%</b> · vol ≥ $${(st.minVolUsd / 1000).toFixed(0)}k · skor ≥ ${st.minScore}`,
-      `Interval ${st.intervalMin} menit · cooldown ${st.cooldownMin} menit`,
+      `🎯 <b>LP Candidate Hunter</b> — ${st.on ? "🟢 ON" : "🔴 OFF"}`,
+      `Criteria: pool <b>v4 fee ${(st.feeMinPpm / 10000).toFixed(0)}-${(st.feeMaxPpm / 10000).toFixed(0)}%</b> · vol ≥ $${(st.minVolUsd / 1000).toFixed(0)}k · score ≥ ${st.minScore}`,
+      `Interval ${st.intervalMin} minutes · cooldown ${st.cooldownMin} minutes`,
       st.scans > 0
-        ? `Scan terakhir: ${st.lastScanned} trending → <b>${st.lastFound}</b> kandidat · total ${st.alerts} alert`
-        : `Belum ada scan.`,
+        ? `Last scan: ${st.lastScanned} trending → <b>${st.lastFound}</b> candidates · ${st.alerts} total alerts`
+        : `No scans yet.`,
       ``,
       `<code>/hunt on</code> · <code>/hunt off</code> · <code>/hunt now</code>`,
     ].join("\n"),
@@ -1624,36 +1624,36 @@ export async function onHunt(arg?: string): Promise<void> {
 
 /** Generate + send the whole-portfolio profit card (Meteora-style flex graphic). */
 export async function onCard(): Promise<void> {
-  const m = await send("📸 Bikin kartu profit…");
+  const m = await send("📸 Generating profit card…");
   const mid = m?.result?.message_id;
   try {
     const { renderCard, portfolioCardData } = await import("./card.js");
     const png = await renderCard(await portfolioCardData());
     await sendPhoto(png, "📊 <b>Profit Robinhood LP Bot</b> — share it 🚀");
-    if (mid) await edit(mid, "📸 Kartu profit ↑");
+    if (mid) await edit(mid, "📸 Profit card ↑");
   } catch (e) {
-    if (mid) await edit(mid, `❌ Gagal bikin kartu: ${short(e, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to generate card: ${short(e, 100)}`);
   }
 }
 
 /** Save a photo the owner sent as the profit-card background (assets/card-bg.jpg). */
 export async function onSetBg(fileId: string): Promise<void> {
-  const m = await send("🖼 Nyimpen background kartu…");
+  const m = await send("🖼 Saving card background…");
   const mid = m?.result?.message_id;
   try {
     const buf = await downloadTgFile(fileId);
     if (!buf) {
-      if (mid) await edit(mid, "❌ Gagal ambil gambar dari Telegram.");
+      if (mid) await edit(mid, "❌ Failed to download image from Telegram.");
       return;
     }
     mkdirSync("assets", { recursive: true });
     writeFileSync("assets/card-bg.jpg", buf);
-    if (mid) await edit(mid, "✅ Background kartu di-set. Ini preview-nya 👇");
+    if (mid) await edit(mid, "✅ Card background set. Preview below 👇");
     const { renderCard, portfolioCardData } = await import("./card.js");
     const png = await renderCard(await portfolioCardData());
-    await sendPhoto(png, "🎴 Background baru kepasang — <b>/card</b> kapan aja buat share.");
+    await sendPhoto(png, "🎴 New background applied — use <b>/card</b> any time to share.");
   } catch (e) {
-    if (mid) await edit(mid, `❌ Gagal set background: ${short(e, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to set background: ${short(e, 100)}`);
   }
 }
 
@@ -1661,10 +1661,10 @@ export async function onSetBg(fileId: string): Promise<void> {
 export async function onCardFor(tokenId: string): Promise<void> {
   const e = readLedger().find((x) => x.tokenId === tokenId);
   if (!e) {
-    await send("❌ Posisi nggak ketemu di ledger.");
+    await send("❌ Position not found in the ledger.");
     return;
   }
-  const m = await send("📸 Bikin kartu posisi…");
+  const m = await send("📸 Generating position card…");
   const mid = m?.result?.message_id;
   try {
     const { renderCard, closeCardData } = await import("./card.js");
@@ -1683,9 +1683,9 @@ export async function onCardFor(tokenId: string): Promise<void> {
       }),
     );
     await sendPhoto(png, `🎴 <b>${esc(e.pair ?? `${e.sym}/WETH`)}</b> — share it 🚀`);
-    if (mid) await edit(mid, "📸 Kartu ↑");
+    if (mid) await edit(mid, "📸 Card ↑");
   } catch (err) {
-    if (mid) await edit(mid, `❌ Gagal bikin kartu: ${short(err, 100)}`);
+    if (mid) await edit(mid, `❌ Failed to generate card: ${short(err, 100)}`);
   }
 }
 
@@ -1711,20 +1711,20 @@ async function sendCloseCard(p: {
 }
 
 export async function onBriefing(): Promise<void> {
-  await send("📋 Nyusun briefing harian… (analisa LLM bisa ~1 menit)");
+  await send("📋 Preparing daily briefing… (LLM analysis may take ~1 minute)");
   const { runBriefing } = await import("./briefing.js");
   await runBriefing("manual");
 }
 
 export async function onPnl(): Promise<void> {
-  await send("📊 Menghitung PnL seumur hidup… (scan history + rug, ±20 detik)");
+  await send("📊 Calculating lifetime PnL… (scanning history + rugs, ~20 seconds)");
   let r;
   try {
     // overall safety-net timeout so /pnl can't hang forever if Blockscout/RPC is slow (the per-token
     // quote timeout in analytics.ts handles the usual culprit; this bounds the total scan).
     r = await Promise.race([
       lifetimePnl(),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("scan &gt; 45s — Blockscout/RPC lambat, coba lagi")), 45_000)),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("scan &gt; 45s — slow Blockscout/RPC, try again")), 45_000)),
     ]);
   } catch (e) {
     await send(`❌ ${short(e, 90)}`);
@@ -1738,42 +1738,42 @@ export async function onPnl(): Promise<void> {
   const row = (lbl: string, eth: string, usd = "") => `${padR(lbl, 8)}${padL(eth, 12)}${usd ? "  " + padL(usd, 9) : ""}`;
 
   const T: string[] = [];
-  T.push(`LP REALIZED · ${sum.count} ditutup`);
+  T.push(`LP REALIZED · ${sum.count} closed`);
   T.push("─".repeat(31));
   T.push(row("PnL", sg(sum.pnlEth, 5) + "Ξ", money(sum.pnlUsd)));
-  T.push(row("menang", `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})`));
+  T.push(row("win rate", `${sum.winRate.toFixed(0)}% (${sum.wins}/${sum.losses})`));
   T.push(row("fee", sum.feeEth.toFixed(5) + "Ξ"));
   T.push("");
-  T.push(`ARUS WALLET (+arb)`);
+  T.push(`WALLET FLOWS (+arb)`);
   T.push("─".repeat(31));
-  T.push(row("setor", r.capIn.toFixed(5) + "Ξ", $(r.capIn)));
-  T.push(row("tarik", r.capOut.toFixed(5) + "Ξ", $(r.capOut)));
-  T.push(row("nilai", r.valueNowEth.toFixed(5) + "Ξ", $(r.valueNowEth)));
+  T.push(row("deposits", r.capIn.toFixed(5) + "Ξ", $(r.capIn)));
+  T.push(row("withdraw", r.capOut.toFixed(5) + "Ξ", $(r.capOut)));
+  T.push(row("value", r.valueNowEth.toFixed(5) + "Ξ", $(r.valueNowEth)));
   T.push(`  native ${r.nativeEth.toFixed(4)}  WETH ${r.wethHeld.toFixed(4)}`);
   T.push(`  LP ${r.openLpEth.toFixed(4)}Ξ  token $${r.tokensUsd.toFixed(2)}`);
   T.push(row("net", sg(r.pnlEth, 5) + "Ξ", money(r.pnlUsd)));
 
   const grave = r.graveyardCount
-    ? `\n🪦 <b>${r.graveyardCount} token nyangkut</b> <i>(rug/likuiditas kering)</i>\n${pre(r.graveyard.join(", ") + (r.graveyardCount > r.graveyard.length ? " …" : ""))}`
+    ? `\n🪦 <b>${r.graveyardCount} stuck tokens</b> <i>(rug/no liquidity)</i>\n${pre(r.graveyard.join(", ") + (r.graveyardCount > r.graveyard.length ? " …" : ""))}`
     : "";
   await sendMenu(
-    `📊 <b>PnL SEUMUR HIDUP</b>${px ? ` · ETH $${px.toFixed(0)}` : ""}\n` +
+    `📊 <b>LIFETIME PnL</b>${px ? ` · ETH $${px.toFixed(0)}` : ""}\n` +
       pre(T.join("\n")) +
-      `<i>⚠️ Net wallet nyampur flow arb — angka LP akurat = "LP realized".</i>` +
+      `<i>⚠️ Wallet net includes arbitrage flows — the accurate LP figure is "LP realized".</i>` +
       grave,
   );
 }
 
 export async function onSell(): Promise<void> {
-  await send("🔄 <b>Menjual semua token nyangkut → ETH…</b>\n(skip yang rug/pool kering)");
+  await send("🔄 <b>Selling all stuck tokens → ETH…</b>\n(skipping rugs/pools with no liquidity)");
   try {
     const r = await sellAllTokens((msg) => {
       void send(msg).catch(() => {});
     });
     await sendMenu(
       [
-        `🏁 <b>Selesai jual</b> — ${r.sold} token → ETH${r.skipped ? `, ${r.skipped} di-skip (rug)` : ""}`,
-        `💰 Total dapet: <b>+${r.soldEth.toFixed(6)} WETH ($${r.soldUsd.toFixed(2)})</b>`,
+        `🏁 <b>Selling complete</b> — ${r.sold} token → ETH${r.skipped ? `, ${r.skipped} skipped (rug)` : ""}`,
+        `💰 Total received: <b>+${r.soldEth.toFixed(6)} WETH ($${r.soldUsd.toFixed(2)})</b>`,
       ].join("\n"),
     );
   } catch (e) {
@@ -1804,9 +1804,9 @@ export async function onSettings(): Promise<void> {
     `${padR("fast-submit", 12)} ${env.fastSubmit ? "on" : "off"}`,
   ];
   await sendMenu(
-    `⚙️ <b>Setting</b>${pre(T.join("\n"))}` +
-      `Ubah: <code>/set width 40</code> · <code>/set slippage 5</code> · <code>/set gastarget 0.015</code>\n` +
-      `<i>Watch/Feed/Auto/Radar diatur di menu masing-masing.</i>`,
+    `⚙️ <b>Settings</b>${pre(T.join("\n"))}` +
+      `Change: <code>/set width 40</code> · <code>/set slippage 5</code> · <code>/set gastarget 0.015</code>\n` +
+      `<i>Configure Watch/Feed/Auto/Radar in their respective menus.</i>`,
   );
 }
 
@@ -1876,52 +1876,52 @@ export async function onSet(text: string): Promise<void> {
   // ── enum / string auto-LP settings (handled BEFORE the numeric guard below) ──
   if (k === "alpmode") {
     if (v !== "single" && v !== "inrange") {
-      await send("Pilih: <code>/set alpmode single</code> (rug-safe, parkir quote) atau <code>/set alpmode inrange</code> (both-sided, fee langsung).");
+      await send("Choose: <code>/set alpmode single</code> (rug-safe, park quote asset) or <code>/set alpmode inrange</code> (both-sided, immediate fees).");
       return;
     }
     cfg.autoLp.mode = v;
     persist();
     await send(
-      `✓ autoLp.mode → <b>${v}</b> ${v === "inrange" ? "(both-sided — fee LANGSUNG, tapi pegang token → rug=rugi)" : "(single-side — parkir quote asset, rug-safe)"}`,
+      `✓ autoLp.mode → <b>${v}</b> ${v === "inrange" ? "(both-sided — IMMEDIATE fees, but holding tokens → rug=loss)" : "(single-side — park quote asset, rug-safe)"}`,
     );
     return;
   }
   if (k === "alpclose") {
     if (v !== "0" && v !== "1") {
-      await send("Toggle: <code>/set alpclose 1</code> (tutup OOR) / <code>/set alpclose 0</code> (biarin jalan)");
+      await send("Toggle: <code>/set alpclose 1</code> (close OOR) / <code>/set alpclose 0</code> (keep running)");
       return;
     }
     cfg.autoLp.closeOor = v === "1";
     persist();
-    await send(`✓ autoLp.closeOor → ${v === "1" ? "on (tutup posisi OOR)" : "off (posisi dibiarin jalan)"}`);
+    await send(`✓ autoLp.closeOor → ${v === "1" ? "on (close OOR positions)" : "off (keep positions running)"}`);
     return;
   }
   if (k === "alprebalance" || k === "alprebal") {
     if (v !== "close" && v !== "rebalance") {
       await send(
-        "Pilih: <code>/set alprebalance rebalance</code> (posisi OOR di-recenter ke harga baru) atau <code>/set alprebalance close</code> (default — tutup ke ETH).\n<i>butuh /set alpclose 1</i>",
+        "Choose: <code>/set alprebalance rebalance</code> (recenter OOR positions at the new price) or <code>/set alprebalance close</code> (default — close to ETH).\n<i>requires /set alpclose 1</i>",
       );
       return;
     }
     cfg.autoLp.oorAction = v;
     persist();
     await send(
-      `✓ autoLp.oorAction → <b>${v}</b> ${v === "rebalance" ? "(OOR → tutup + buka ulang recentered, modal terus kerja)" : "(OOR ditutup ke ETH)"}${v === "rebalance" && !cfg.autoLp.closeOor ? "\n⚠️ nyalain dulu: <code>/set alpclose 1</code>" : ""}`,
+      `✓ autoLp.oorAction → <b>${v}</b> ${v === "rebalance" ? "(OOR → close + reopen recentered, keeping capital deployed)" : "(OOR closed to ETH)"}${v === "rebalance" && !cfg.autoLp.closeOor ? "\n⚠️ enable first: <code>/set alpclose 1</code>" : ""}`,
     );
     return;
   }
   if (k === "alpcompound") {
     if (v !== "0" && v !== "1") {
-      await send("Toggle: <code>/set alpcompound 1</code> (fee di-compound balik) / <code>/set alpcompound 0</code> (off)");
+      await send("Toggle: <code>/set alpcompound 1</code> (reinvest fees) / <code>/set alpcompound 0</code> (off)");
       return;
     }
     cfg.autoLp.compound = v === "1";
     persist();
-    await send(`✓ autoLp.compound → ${v === "1" ? `on (fee ≥ $${cfg.autoLp.compoundMinUsd} di-harvest & di-add balik)` : "off"}`);
+    await send(`✓ autoLp.compound → ${v === "1" ? `on (fee ≥ $${cfg.autoLp.compoundMinUsd} harvested & reinvested)` : "off"}`);
     return;
   }
   if (!k || v == null || isNaN(Number(v))) {
-    await send(`Format: <code>/set &lt;key&gt; &lt;angka&gt;</code>\n${SET_HELP}`);
+    await send(`Format: <code>/set &lt;key&gt; &lt;number&gt;</code>\n${SET_HELP}`);
     return;
   }
   if (LP_MAP[k]) {
@@ -1952,7 +1952,7 @@ export async function onSet(text: string): Promise<void> {
   if (RADAR_BOOL_MAP[k]) {
     (cfg.radar[RADAR_BOOL_MAP[k]] as boolean) = Number(v) !== 0;
     persist();
-    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey ? " ⚠️ RH_OPENROUTER_KEY belum diset" : "";
+    const warn = k === "radar" && Number(v) !== 0 && !env.openrouterKey ? " ⚠️ RH_OPENROUTER_KEY is not set" : "";
     await send(`✓ radar.${k} → ${Number(v) !== 0 ? "on" : "off"}${warn}`);
     return;
   }
@@ -1968,34 +1968,34 @@ export async function onSet(text: string): Promise<void> {
     await send(`✓ hunt.${k} → ${v}`);
     return;
   }
-  await send(`Key nggak dikenal.\n${SET_HELP}`);
+  await send(`Unknown key.\n${SET_HELP}`);
 }
 
 export async function onHelp(): Promise<void> {
   const body = [
     `🤖 <b>Robinhood LP Bot</b>  <i>v2 · Uniswap v2+v3+v4</i>`,
-    `Paste <b>CA token</b> (0x…) → pilih pool (v2/v3/v4) → jumlah ETH → LP.`,
+    `Paste a <b>token CA</b> (0x…) → choose a pool (v2/v3/v4) → ETH amount → LP.`,
     ``,
-    `<b>━━━ 📊 POSISI ━━━</b>`,
-    `📋 /list — posisi terbuka + PnL + close`,
-    `📒 /ledger — riwayat ditutup (realized)`,
-    `💰 /pnl — PnL seumur hidup`,
-    `📸 /card — kartu profit shareable`,
+    `<b>━━━ 📊 POSITIONS ━━━</b>`,
+    `📋 /list — open positions + PnL + close`,
+    `📒 /ledger — closed position history (realized)`,
+    `💰 /pnl — lifetime PnL`,
+    `📸 /card — shareable profit card`,
     ``,
     `<b>━━━ 🎯 RADAR & AUTO ━━━</b>`,
     `🧪 /screen — screening GMGN 24h (mcap&gt;500k, vol&gt;1M, no flap, util&gt;meme)`,
-    `📡 /feed — monitor sequencer real-time`,
-    `👁 /watch — scanner volume nanjak`,
-    `🔍 /scan — cek volume sekarang`,
-    `🤖 /auto — auto-LP (radar → buka sendiri)`,
-    `🦄 /v4 <code>&lt;ca&gt;</code> — cek pool v4 fee-tinggi`,
+    `📡 /feed — real-time sequencer monitor`,
+    `👁 /watch — rising-volume scanner`,
+    `🔍 /scan — check volume now`,
+    `🤖 /auto — auto-LP (radar → automatic entry)`,
+    `🦄 /v4 <code>&lt;ca&gt;</code> — check high-fee v4 pools`,
     ``,
-    `<b>━━━ ⚡ AKSI ━━━</b>`,
-    `🔄 /swap <code>&lt;jml&gt; &lt;dari&gt; &lt;ke&gt;</code> — swap via Kyber`,
+    `<b>━━━ ⚡ ACTIONS ━━━</b>`,
+    `🔄 /swap <code>&lt;amount&gt; &lt;from&gt; &lt;to&gt;</code> — swap via Kyber`,
     `🗑 /closeall · 💸 /sell · 👛 /wallet`,
     `⚙️ /settings · /set <code>&lt;k&gt; &lt;v&gt;</code>`,
     ``,
-    `<i>Menu cepat ada di bawah 👇 — nggak perlu ngetik.</i>`,
+    `<i>Quick menu below 👇 — no typing needed.</i>`,
   ].join("\n");
   await sendMenu(body);
 }
@@ -2007,8 +2007,8 @@ export async function onAddAsk(tokenId: string, version: "v3" | "v4"): Promise<v
   pending = null; // drop any open-flow so a stray number doesn't mis-route
   pendingAdd = { tokenId, version };
   await send(
-    `➕ <b>Tambah liq ke posisi #${tokenId}</b> [${version}]\n` +
-      `Ketik jumlah <b>ETH</b> yang mau ditambahin (contoh: <code>0.005</code>). Bot auto split ½ token + ½ USDG → masuk ke posisi itu (bukan buka baru).`,
+    `➕ <b>Add liquidity to position #${tokenId}</b> [${version}]\n` +
+      `Enter the <b>ETH</b> amount to add (example: <code>0.005</code>). The bot automatically splits ½ token + ½ USDG → adds to that position (does not open a new one).`,
   );
 }
 
@@ -2016,23 +2016,23 @@ export async function onAddAmount(text: string): Promise<void> {
   if (!pendingAdd) return;
   const eth = parseFloat(text);
   if (!(eth > 0)) {
-    await send("Masukin angka ETH yang bener, contoh: 0.005");
+    await send("Enter a valid ETH amount, for example: 0.005");
     return;
   }
   const b = await balances().catch(() => null);
   if (b && eth > usableEth(b) + 1e-9) {
-    await send(`⚠️ Kegedean. Yang bisa di-LP cuma ${usableEth(b).toFixed(5)} ETH.`);
+    await send(`⚠️ Amount too large. Only ${usableEth(b).toFixed(5)} ETH is available for LP.`);
     return;
   }
   if (b && Number(b.eth) < GAS_RESERVE) {
-    await send(`⚠️ ETH native cuma ${Number(b.eth).toFixed(5)} — kurang buat gas (min ${GAS_RESERVE}).`);
+    await send(`⚠️ Only ${Number(b.eth).toFixed(5)} native ETH — not enough for gas (minimum ${GAS_RESERVE}).`);
     return;
   }
   const { tokenId, version } = pendingAdd;
   pendingAdd = null;
   const amt = toEthStr(eth) ?? String(eth);
   invalidateListCache();
-  const m = await send(`⏳ <b>Nambah ${amt} ETH ke posisi #${tokenId}…</b> (swap ½+½ → increase)`);
+  const m = await send(`⏳ <b>Adding ${amt} ETH to position #${tokenId}…</b> (swap ½+½ → increase)`);
   const mid = m?.result?.message_id;
   try {
     if (version === "v4") {
@@ -2041,23 +2041,23 @@ export async function onAddAmount(text: string): Promise<void> {
       await edit(
         mid,
         [
-          `✅ <b>Liq masuk ke #${tokenId}</b> [v4] · pool fee ${(r.fee / 10000).toFixed(2)}%`,
+          `✅ <b>Liquidity added to #${tokenId}</b> [v4] · pool fee ${(r.fee / 10000).toFixed(2)}%`,
           r.swapHash ? `swap ½+½: <a href="${explorerTx(r.swapHash)}">tx</a>` : "",
-          `deposit <b>+${amt}Ξ</b> (masuk ke posisi lama, bukan #baru)`,
+          `deposit <b>+${amt}Ξ</b> (added to the existing position, not a new #)`,
           `tx: <a href="${explorerTx(r.txHash)}">tx</a>`,
         ]
           .filter(Boolean)
           .join("\n"),
       );
     } else {
-      await edit(mid, "increase v3 belum didukung (baru v4).");
+      await edit(mid, "v3 liquidity increase is not supported yet (v4 only).");
     }
   } catch (e) {
     const msg = (e as Error).message || String(e);
     const friendly = /revert|settle|slippage|CurrencyNotSettled/i.test(msg)
-      ? "harga pool gerak pas settle (pool volatil / fee tinggi). <b>Coba tap ➕ Add lagi</b> — token/USDG yang keburu kebeli di-reuse, biasanya berhasil percobaan ke-2."
+      ? "Pool price moved during settlement (volatile pool / high fee). <b>Try tapping ➕ Add again</b> — tokens/USDG already purchased are reused; the second attempt usually succeeds."
       : short(e, 160);
-    await edit(mid, `❌ Gagal nambah liq: ${friendly}`);
+    await edit(mid, `❌ Failed to add liquidity: ${friendly}`);
   }
 }
 
@@ -2074,7 +2074,7 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
     const png = await renderCalendar(y, m);
     const prev = m === 0 ? [y - 1, 11] : [y, m - 1];
     const next = m === 11 ? [y + 1, 0] : [y, m + 1];
-    await sendPhoto(png, "📅 <b>Profit Calendar</b> — tiap kotak = PnL posisi yang di-close hari itu (fee included). Reset 07:00 WIB.", {
+    await sendPhoto(png, "📅 <b>Profit Calendar</b> — each cell = PnL of positions closed that day (fees included). Resets at 07:00 WIB.", {
       reply_markup: {
         inline_keyboard: [
           [
@@ -2085,7 +2085,7 @@ export async function onCalendar(year?: number, month0?: number): Promise<void> 
       },
     });
   } catch (e) {
-    await send(`❌ Calendar gagal: ${short(e, 120)}`);
+    await send(`❌ Calendar failed: ${short(e, 120)}`);
   }
 }
 

@@ -187,7 +187,7 @@ export async function backfillLedgerV4(onProgress: (msg: string) => void = () =>
     existing.filter((e) => e.version === "v4" && e.source === "bot" && hasEthLeg(e)).map((e) => e.tokenId),
   );
 
-  onProgress(`ambil riwayat tx…`);
+  onProgress(`fetching transaction history…`);
   const tl = await j(`${blockscout}/api?module=account&action=txlist&address=${w.address}&startblock=0&endblock=99999999&sort=asc`);
   const posmTxs = (tl?.result ?? []).filter((t: any) => t.to?.toLowerCase() === posmL && t.isError !== "1");
 
@@ -219,7 +219,7 @@ export async function backfillLedgerV4(onProgress: (msg: string) => void = () =>
   const out = [...existing];
   let rebuilt = 0;
   for (const id of todo) {
-    onProgress(`rekonstruksi v4 #${id}… (${rebuilt + 1}/${todo.length})`);
+    onProgress(`reconstructing v4 #${id}… (${rebuilt + 1}/${todo.length})`);
     try {
       const e = await reconstructV4Pnl(id, posmTxs);
       if (e) {
@@ -227,13 +227,13 @@ export async function backfillLedgerV4(onProgress: (msg: string) => void = () =>
         rebuilt++;
       }
     } catch (err) {
-      log.warn(`v4 #${id} gagal: ${(err as Error).message.slice(0, 70)}`);
+      log.warn(`v4 #${id} failed: ${(err as Error).message.slice(0, 70)}`);
     }
   }
   // de-dup by (version,tokenId), keep the last (freshly reconstructed wins over stale)
   const seen = new Map<string, LedgerEntry>();
   for (const e of out) seen.set(`${e.version ?? "v3"}:${e.tokenId}`, e);
   writeLedger([...seen.values()]);
-  log.info(`v4 backfill: ${rebuilt}/${todo.length} posisi`);
+  log.info(`v4 backfill: ${rebuilt}/${todo.length} positions`);
   return { rebuilt, total: seen.size };
 }

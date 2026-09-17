@@ -27,7 +27,7 @@ export function lockOwner(chatId: string | number): void {
     owner = id;
     cfg.telegramChatId = id;
     persist();
-    log.info(`owner terkunci ke chat ${id} (set RH_TG_CHAT untuk permanen)`);
+    log.info(`owner locked to chat ${id} (set RH_TG_CHAT to make permanent)`);
   }
 }
 
@@ -102,7 +102,7 @@ export async function sendPhoto(png: Buffer, caption?: string, extra: Extra = {}
     const r = await fetch(`${BASE}/sendPhoto`, { method: "POST", body: fd, signal: AbortSignal.timeout(45_000) });
     return await r.json();
   } catch (e) {
-    log.warn(`sendPhoto gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`sendPhoto failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }
@@ -116,7 +116,7 @@ export async function downloadTgFile(fileId: string): Promise<Buffer | null> {
     const r = await fetch(`https://api.telegram.org/file/bot${env.tgToken}/${fp}`, { signal: AbortSignal.timeout(30_000) });
     return Buffer.from(await r.arrayBuffer());
   } catch (e) {
-    log.warn(`downloadTgFile gagal: ${(e as Error).message.slice(0, 80)}`);
+    log.warn(`downloadTgFile failed: ${(e as Error).message.slice(0, 80)}`);
     return null;
   }
 }
