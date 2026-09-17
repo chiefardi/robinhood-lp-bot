@@ -11,25 +11,46 @@
  */
 import { execFile } from "node:child_process";
 import { logger } from "../util/log.js";
+import {analyzeHolderCoverage,type HolderEvidence} from './holder-coverage.js';
+export {analyzeHolderCoverage} from './holder-coverage.js';
 
 const log = logger("gmgn");
 const CHAIN = "robinhood";
 const TIMEOUT = 12_000;
 
 let available: boolean | null = null;
+let queue:Promise<unknown>=Promise.resolve();
+let nextCallAt=0;
+let cooldownUntil=0;
 
 /** Run a gmgn-cli sub-command with --raw and parse JSON. Returns null on any failure. */
 function run(args: string[]): Promise<any | null> {
-  return new Promise((resolve) => {
-    execFile("gmgn-cli", args, { timeout: TIMEOUT, windowsHide: true }, (err, stdout) => {
-      if (err) return resolve(null);
+  const queuedAt=Date.now();
+  const request=queue.then(async()=>{
+    if(Date.now()<cooldownUntil||Date.now()-queuedAt>30_000)return null;
+    await new Promise(r=>setTimeout(r,Math.max(0,nextCallAt-Date.now())));
+    return new Promise(resolve=>{
+    execFile("gmgn-cli", args, { timeout: TIMEOUT, windowsHide: true }, (err, stdout, stderr) => {
+      nextCallAt=Date.now()+1500;
+      if (err) {
+        // Never log raw CLI errors (they may contain credential-bearing URLs).
+        if(/429|RATE_LIMIT/i.test(stderr+stdout))cooldownUntil=Date.now()+300_000;
+        return resolve(null);
+      }
       try {
-        resolve(JSON.parse(stdout.trim()));
+        const parsed=JSON.parse(stdout.trim());
+        if(parsed?.code===429||parsed?.code==='429'||String(parsed?.error??'').startsWith('RATE_LIMIT')){
+          cooldownUntil=Date.now()+300_000;return resolve(null);
+        }
+        resolve(parsed);
       } catch {
         resolve(null);
       }
     });
+    });
   });
+  queue=request.catch(()=>null);
+  return request;
 }
 
 /** One-time availability probe (CLI present + configured). */
@@ -64,6 +85,7 @@ export interface GmgnData {
   launchBundlerRate?: number; // historical allocation, NOT current linked-wallet exposure
   currentLinkedHoldingRate?: number;
   currentBundlerHoldingRate?: number;
+  holderEvidence?:HolderEvidence;
 }
 
 /** One trending-token row from `gmgn-cli market trending` (fields we screen on). */
@@ -187,14 +209,22 @@ export async function gmgnTrending(opts: TrendingOpts = {}): Promise<GmgnTrendTo
 }
 
 /** Fetch + flatten the GMGN token info + security for a Robinhood-chain token. */
-export async function gmgnToken(address: string): Promise<GmgnData | null> {
+export async function gmgnToken(address: string, options:{holders?:boolean}={}): Promise<GmgnData | null> {
   if (!(await gmgnAvailable())) return null;
+  if(!/^0x[0-9a-f]{40}$/i.test(address))return null;
+  const observedAt=Date.now();
   const [info, sec] = await Promise.all([
     run(["token", "info", "--chain", CHAIN, "--address", address, "--raw"]),
     run(["token", "security", "--chain", CHAIN, "--address", address, "--raw"]),
   ]);
   if (!info && !sec) return null;
-  return normalizeGmgnToken(info?.data ?? info, sec?.data ?? sec, Date.now());
+  const result=normalizeGmgnToken(info?.data ?? info, sec?.data ?? sec, observedAt);
+  if(options.holders){
+    const at=Date.now();
+    const raw=await run(['token','holders','--chain',CHAIN,'--address',address,'--limit','100','--order-by','amount_percentage','--direction','desc','--raw']);
+    result.holderEvidence=analyzeHolderCoverage(raw?.data??raw,at);
+  }
+  return result;
 }
 
 export function normalizeGmgnToken(info: any, sec: any, observedAt: number): GmgnData {

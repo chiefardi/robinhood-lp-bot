@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as guard from '../src/radar/entry-guard.ts';
 import * as gmgn from '../src/radar/gmgn.ts';
 
-const safe = { isHoneypot: false, buyTax: 0, sellTax: 0, currentLinkedHoldingRate: 0.01, currentBundlerHoldingRate: 0.01, observedAt: 1000 };
+const holderEvidence={status:'ok',observedAt:1000,rows:100,coverageRate:.9,unobservedRate:.1,custodyRate:.4,taggedRiskRate:.01,taggedRiskUpperRate:.11,largestWalletRate:.04,top10WalletRate:.4,largestSharedFunderRate:0};
+const safe = { isHoneypot: false, buyTax: 0, sellTax: 0, holderEvidence, observedAt: 1000 };
 
 test('raw GMGN booleans preserve false versus unknown and launch allocation never becomes current holdings',()=>{
   assert.equal(typeof gmgn.normalizeGmgnToken,'function');
@@ -21,11 +22,11 @@ test('raw GMGN booleans preserve false versus unknown and launch allocation neve
 test('unknown security, launch-only bundles and stale observations cannot authorize entry', () => {
   assert.equal(typeof guard.securityFailure, 'function');
   assert.equal(guard.securityFailure(safe, 5, 1000), null);
-  for (const data of [null, {}, {...safe,isHoneypot:undefined}, {...safe,buyTax:NaN}, {...safe,sellTax:Infinity}, {...safe,currentLinkedHoldingRate:undefined}, {...safe,currentBundlerHoldingRate:undefined,bundlerRate:0}, {...safe,observedAt:0}, {...safe,observedAt:2000}]) {
+  for (const data of [null, {}, {...safe,isHoneypot:undefined}, {...safe,buyTax:NaN}, {...safe,sellTax:Infinity}, {...safe,holderEvidence:undefined}, {...safe,holderEvidence:undefined,bundlerRate:0}, {...safe,observedAt:0}, {...safe,observedAt:2000}]) {
     assert.ok(guard.securityFailure(data, 5, 1000));
   }
   assert.ok(guard.securityFailure(safe, 5, 100_000));
-  assert.ok(guard.securityFailure({...safe,currentLinkedHoldingRate:0.31},5,1000));
+  assert.ok(guard.securityFailure({...safe,holderEvidence:{...holderEvidence,taggedRiskUpperRate:.31}},5,1000));
 });
 
 test('basis counts native plus WETH and USDG debits including gas and refunds', () => {

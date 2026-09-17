@@ -21,6 +21,10 @@ export interface DexPair {
   chgH1: number; // % price change 1h (signed) — volatility signal for adaptive range width
   chgH6: number; // % price change 6h (signed)
   volH1: number; // 1h volume ($) — spike/fade signal (recent activity vs 24h average)
+  vol5m?:number;
+  buys5m?:number;
+  sells5m?:number;
+  observedAt?:number;
 }
 
 const cache = new Map<string, { at: number; map: Map<string, DexPair> }>();
@@ -38,6 +42,7 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
     const j: any = await r.json().catch(() => null);
     for (const p of j?.pairs ?? []) {
       const pa = String(p.pairAddress ?? "").toLowerCase();
+      if(p.chainId!=='robinhood')continue;
       if (!pa) continue;
       map.set(pa, {
         pairAddr: pa,
@@ -48,6 +53,10 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
         chgH1: Number(p.priceChange?.h1 ?? 0),
         chgH6: Number(p.priceChange?.h6 ?? 0),
         volH1: Number(p.volume?.h1 ?? 0),
+        vol5m:p.volume?.m5==null?undefined:Number(p.volume.m5),
+        buys5m:p.txns?.m5?.buys==null?undefined:Number(p.txns.m5.buys),
+        sells5m:p.txns?.m5?.sells==null?undefined:Number(p.txns.m5.sells),
+        observedAt:now,
       });
     }
   } catch (e) {

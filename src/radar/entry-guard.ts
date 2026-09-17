@@ -3,6 +3,7 @@ import type { GmgnData } from './gmgn.js';
 import type { Verdict } from './radar.js';
 import type { V4Pool } from '../chain/v4/discover.js';
 import { ethers } from 'ethers';
+import {holderFailure} from './holder-coverage.js';
 
 export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void}
 export function validateEntryBudget(pool:V4Pool,amountEth:string,o:StrictEntryBudget,now=Date.now()):void {
@@ -33,6 +34,14 @@ export function llmFailure(verdict:Verdict|null,required:boolean,action:string,m
   return null;
 }
 
+export function poolActivityFailure(p:{vol5m?:number;volH1?:number;buys5m?:number;sells5m?:number;observedAt?:number},limits:{minVol5m:number;minVol1h:number},now:number):string|null {
+  if(!Number.isFinite(now)||!Number.isFinite(p.observedAt)||p.observedAt!<=0||p.observedAt!>now||now-p.observedAt!>60_000)return 'exact pool activity stale or missing';
+  if([p.vol5m,p.volH1,limits.minVol5m,limits.minVol1h].some(n=>typeof n!=='number'||!Number.isFinite(n)||n<0))return 'exact pool volume missing or invalid';
+  if(p.vol5m!<limits.minVol5m||p.volH1!<limits.minVol1h)return 'exact pool volume below pilot thresholds';
+  if([p.buys5m,p.sells5m].some(n=>!Number.isSafeInteger(n)||n!<=0))return 'exact pool lacks recent two-way trades';
+  return null;
+}
+
 export function securityFailure(g: GmgnData | null, maxTaxPct: number, now: number): string | null {
   if (!g) return 'fresh GMGN security required';
   if (!Number.isFinite(now) || !Number.isFinite(g.observedAt) || g.observedAt! <= 0 || now < g.observedAt! || now - g.observedAt! > 60_000) return 'GMGN observation stale or invalid';
@@ -41,11 +50,7 @@ export function securityFailure(g: GmgnData | null, maxTaxPct: number, now: numb
     if (typeof tax !== 'number' || !Number.isFinite(tax) || tax < 0 || tax > 1) return 'unknown or invalid tax';
     if (tax * 100 > maxTaxPct) return 'tax exceeds limit';
   }
-  for (const rate of [g.currentLinkedHoldingRate, g.currentBundlerHoldingRate]) {
-    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 1) return 'current linked/bundler exposure unknown';
-    if (rate > 0.30) return 'current linked/bundler exposure exceeds 30%';
-  }
-  return null;
+  return holderFailure(g.holderEvidence,now);
 }
 
 export interface WalletSnapshot { eth: number; weth: number; usdg: number }

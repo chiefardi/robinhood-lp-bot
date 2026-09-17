@@ -18,6 +18,7 @@ export interface QualifiedPool {
   volPct: number; // |price change| % (max of 1h/6h) — volatility for adaptive range width
   volH1: number; // 1h volume ($)
   spikeX: number; // volH1 / (vol24h/24) — recent hour vs 24h-avg hour; >1 = heating up NOW (#1 spike)
+  vol5m?:number;buys5m?:number;sells5m?:number;observedAt?:number;
 }
 
 /**
@@ -58,7 +59,7 @@ export async function qualifyCandidate(token: string): Promise<QualifiedPool | n
     const volH1 = d?.volH1 ?? 0;
     const spikeX = volUsd > 0 ? volH1 / (volUsd / 24) : 0;
     if (s.minSpikeX > 0 && spikeX < s.minSpikeX) continue; // require recent momentum (active now, not stale)
-    if (!best || feesUsd > best.feesUsd) best = { v4: p, fee: p.fee, quote: p.quote, volUsd, liqUsd, feesUsd, feeYieldPct, volPct, volH1, spikeX };
+    if (!best || feesUsd > best.feesUsd) best = { v4: p, fee: p.fee, quote: p.quote, volUsd, liqUsd, feesUsd, feeYieldPct, volPct, volH1, spikeX,vol5m:d?.vol5m,buys5m:d?.buys5m,sells5m:d?.sells5m,observedAt:d?.observedAt };
   }
   return best;
 }
