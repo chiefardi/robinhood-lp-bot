@@ -68,6 +68,19 @@ export function send(text: string, extra: Extra = {}): Promise<any> {
   });
 }
 
+export function telegramDeliveryFailure(hasOwner:boolean,result:any):string|null {
+  if(!hasOwner)return 'Telegram owner chat is not configured';
+  return result?.ok===true?null:'Telegram warning delivery failed';
+}
+
+/** Warning-specific send: unlike ordinary chat replies, failed delivery must reach the scanner log. */
+export async function sendCheckedWarning(text:string):Promise<void> {
+  const hasOwner=Boolean(owner);
+  const result=hasOwner?await send(text):null;
+  const failure=telegramDeliveryFailure(hasOwner,result);
+  if(failure)throw new Error(failure);
+}
+
 /** Send a FINAL text response that also re-affirms the persistent bottom menu.
  * Use ONLY for messages that will NOT be edited afterwards. */
 export function sendMenu(text: string): Promise<any> {

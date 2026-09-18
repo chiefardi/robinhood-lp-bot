@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../src/radar/entry-guard.ts';
 import { dispatchCandidateHooks, huntCandidateDecision, singleFlight, hasViableDexPool } from '../src/radar/scanLoop.ts';
 import * as hunt from '../src/radar/scanLoop.ts';
+import { stateViewReadFailure, verify } from '../src/chain/v4/discover.ts';
+import { telegramDeliveryFailure } from '../src/telegram/tg.ts';
 
 test('armed hunt gives a rejected token fifteen minutes before retry unless pool activity doubles', () => {
   assert.equal(typeof hunt.huntEvaluationDue,'function');
@@ -40,6 +42,28 @@ test('systemic qualification errors raise a scanner warning instead of looking l
   assert.equal(hunt.systemicQualificationFailure(12,2),false);
   assert.equal(hunt.systemicQualificationFailure(12,6),true);
   assert.equal(hunt.systemicQualificationFailure(1,1),true);
+});
+
+test('strict state reads distinguish failed calls from genuinely empty pools', () => {
+  assert.equal(stateViewReadFailure(0,4,true),true);
+  assert.equal(stateViewReadFailure(0,0,true),false);
+  assert.equal(stateViewReadFailure(1,4,true),false);
+  assert.equal(stateViewReadFailure(0,4,false),false);
+});
+
+test('all failed StateView subcalls throw during strict pool verification', async () => {
+  const sv={interface:{encodeFunctionData:()=> '0x'}};
+  const keys=[{pk:{fee:30000,tickSpacing:60},poolId:'0x'+'a'.repeat(64)}];
+  const allFailed=async()=>[{success:false,returnData:'0x'},{success:false,returnData:'0x'}];
+  await assert.rejects(verify(sv,keys,'usd',true,allFailed),/StateView pool verification failed/);
+  assert.deepEqual(await verify(sv,keys,'usd',false,allFailed),[]);
+});
+
+test('scanner warning delivery rejects missing owner, network failure and Telegram refusal', () => {
+  assert.equal(telegramDeliveryFailure(false,{ok:true}), 'Telegram owner chat is not configured');
+  assert.equal(telegramDeliveryFailure(true,null), 'Telegram warning delivery failed');
+  assert.equal(telegramDeliveryFailure(true,{ok:false}), 'Telegram warning delivery failed');
+  assert.equal(telegramDeliveryFailure(true,{ok:true}), null);
 });
 
 test('hunt telemetry distinguishes ranked, eligible, sampled and qualified pools', () => {

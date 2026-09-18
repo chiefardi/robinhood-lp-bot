@@ -123,8 +123,10 @@ async function tick(): Promise<void> {
     log.warn(message);
     const now=Date.now();
     if(scanWarningDue(now,lastWarningAt)) {
-      lastWarningAt=now;
-      try { await hooks?.onWarning?.(message); } catch (warningError) { log.warn(`scan warning delivery failed: ${(warningError as Error).message.slice(0,90)}`); }
+      try {
+        await hooks?.onWarning?.(message);
+        lastWarningAt=now;
+      } catch (warningError) { log.warn(`scan warning delivery failed: ${(warningError as Error).message.slice(0,90)}`); }
     }
   }
 }
