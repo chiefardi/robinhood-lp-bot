@@ -49,3 +49,12 @@ test('formats the rejected pool counts as a compact stable log message', () => {
   assert.equal(candidate.formatCandidateRejection({'fee-outside-band':2,'24h-volume-below-minimum':1}),
     '24h-volume-below-minimum=1, fee-outside-band=2');
 });
+
+test('USDG-only qualification does not select a busier ETH pool', () => {
+  const eth = {...pool, poolId:'0x'+'d'.repeat(64), quote:'eth'};
+  const dex = new Map([
+    [poolId,pair],
+    [eth.poolId,{...pair,pairAddr:eth.poolId,vol24h:100_000}],
+  ]);
+  assert.equal(evaluateCandidatePools([eth,pool],dex,limits,'usd').pool?.v4.poolId,poolId);
+});

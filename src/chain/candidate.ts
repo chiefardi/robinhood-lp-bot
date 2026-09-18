@@ -31,13 +31,14 @@ export interface QualifiedPool {
  * Ranks the survivors by absolute 24h fees (the real earning signal), not raw volume.
  */
 export function evaluateCandidatePools(
-  pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan,
+  pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan, quoteFilter?: "eth" | "usd",
 ): { pool: QualifiedPool | null; rejected: Record<string, number> } {
   let best: QualifiedPool | null = null;
   const rejected: Record<string, number> = {};
   const reject = (reason: string): void => { rejected[reason] = (rejected[reason] ?? 0) + 1; };
   if (!pools.length) reject('no-v4-pools-returned');
   for (const p of pools) {
+    if (quoteFilter && p.quote !== quoteFilter) { reject('quote-outside-target'); continue; }
     if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) { reject('fee-outside-band'); continue; }
     const d = dex.get(p.poolId.toLowerCase());
     const volUsd = d?.vol24h ?? 0;
@@ -71,13 +72,13 @@ export function formatCandidateRejection(rejected: Record<string, number>): stri
   return parts.length ? parts.join(', ') : 'unclassified-pool-rejection';
 }
 
-export async function qualifyCandidate(token: string, onRejected?: (reasons: Record<string, number>) => void): Promise<QualifiedPool | null> {
+export async function qualifyCandidate(token: string, onRejected?: (reasons: Record<string, number>) => void, quoteFilter?: "eth" | "usd"): Promise<QualifiedPool | null> {
   const [eth, usd, dex] = await Promise.all([
     discoverV4Pools(token).catch(() => [] as V4Pool[]),
     discoverV4UsdgPools(token).catch(() => [] as V4Pool[]),
     dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
   ]);
-  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan);
+  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan, quoteFilter);
   if (!result.pool) onRejected?.(result.rejected);
   return result.pool;
 }

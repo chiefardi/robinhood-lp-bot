@@ -48,7 +48,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         const failure = securityFailure(g, a.maxTaxPct, Date.now());
         if (failure) throw new Error(failure);
         const {qualifyCandidate} = await import('../chain/candidate.js');
-        const q = await qualifyCandidate(candidate.token);
+        const q = await qualifyCandidate(candidate.token, undefined, 'usd');
         if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
         const limits=activityLimits(candidate.source,cfg.watch,a);
         log.info(`preflight ${candidate.symbol}: ${formatPoolActivityTelemetry(q,limits)}`);

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { screenTokens } from '../src/radar/screen.ts';
+import { rankExactPoolCandidates, fastPoolScore } from '../src/radar/fast-hunt.ts';
+import * as pipeline from '../src/telegram/pipeline.ts';
 
 const trend = (symbol, volume, overrides = {}) => ({
   address: symbol === 'DOG' ? '0x' + 'a'.repeat(40) : '0x' + 'b'.repeat(40),
@@ -25,4 +27,45 @@ test('fast hunt keeps a high-volume meme ahead of a lower-volume utility token',
   assert.equal(requested.interval, '5m');
   assert.equal(requested.limit, 100);
   assert.deepEqual(result.results.map(r => r.token.symbol), ['DOG', 'ORACLE']);
+});
+
+const floors = { minVolUsd: 10_000, minPoolFeesUsd: 250, feeMaxPpm: 50_000, minPoolLiqUsd: 50_000, minVol5m: 1_000, minVol1h: 5_000 };
+const pair = (vol5m, volH1, extra = {}) => ({
+  pairAddr: '0x' + 'c'.repeat(64), version: 'v4', vol24h: 30_000, liqUsd: 80_000,
+  vol5m, volH1, buys5m: 3, sells5m: 2, observedAt: 1000, ...extra,
+});
+const row = (symbol, score, volume) => ({ token: trend(symbol, volume), score, kind: 'meme', community: 'clear', fomo: 50, flags: [] });
+
+test('fast hunt ranks exact v4 pool activity rather than token volume or utility score', () => {
+  const quiet = row('ORACLE', 95, 500_000);
+  const busy = row('DOG', 20, 50_000);
+  const maps = new Map([
+    [quiet.token.address.toLowerCase(), new Map([['quiet', pair(500, 100_000)]])],
+    [busy.token.address.toLowerCase(), new Map([['busy', pair(8_000, 50_000)]])],
+  ]);
+  const ranked = rankExactPoolCandidates([quiet, busy], maps, floors, 1000);
+  assert.deepEqual(ranked.map(x => x.result.token.symbol), ['DOG']);
+  assert.equal(ranked[0].vol5m, 8_000);
+});
+
+test('fast hunt excludes missing activity, one-sided trading, and v3 pools', () => {
+  const tokens = [row('DOG', 80, 80_000), row('ORACLE', 80, 70_000)];
+  const maps = new Map([
+    [tokens[0].token.address.toLowerCase(), new Map([['missing', pair(undefined, 40_000)], ['v3', pair(20_000, 40_000, { version: 'v3' })]])],
+    [tokens[1].token.address.toLowerCase(), new Map([['one-sided', pair(20_000, 40_000, { sells5m: 0 })]])],
+  ]);
+  assert.deepEqual(rankExactPoolCandidates(tokens, maps, floors, 1000), []);
+});
+
+test('fast hunt activity score starts at 75 and rises with exact-pool volume', () => {
+  assert.equal(fastPoolScore(pair(1_000, 5_000), floors, 1000), 75);
+  assert.ok(fastPoolScore(pair(8_000, 40_000), floors, 1000) > 75);
+  assert.equal(fastPoolScore(pair(100_000, 100_000, { sells5m: 0 }), floors, 1000), null);
+});
+
+test('hunt forwards the chosen pool one-hour volume, not five-minute token volume', () => {
+  assert.equal(typeof pipeline.buildHuntCandidate, 'function');
+  const candidate = pipeline.buildHuntCandidate(row('DOG', 82, 90_000), {liqUsd:80_000,volH1:12_000,vol5m:2_000,marketCap:500_000});
+  assert.equal(candidate.source, 'hunt');
+  assert.equal(candidate.vol1h, 12_000);
 });

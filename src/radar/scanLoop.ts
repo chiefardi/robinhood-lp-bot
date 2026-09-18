@@ -3,10 +3,11 @@
  * keeps only survivors that ALSO have a v4 pool in the 3-5% fee band with real volume, and alerts
  * with a 1-tap LP button. This is the focused replacement for the old "every new token" feed spam.
  */
-import { cfg, env } from "../config.js";
+import { cfg } from "../config.js";
 import { screenTokens, type ScreenResult } from "./screen.js";
 import { qualifyCandidate, type QualifiedPool } from "../chain/candidate.js";
 import { dexPairs, type DexPair } from "../chain/dexscreener.js";
+import { rankExactPoolCandidates, fastPoolScore } from "./fast-hunt.js";
 import { logger } from "../util/log.js";
 
 const log = logger("hunt");
@@ -103,11 +104,13 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
   const s = cfg.scan;
   // Loose GMGN gates (the 3-5% pools live on smaller tokens) + thesis/LLM screening.
   const { results, scanned } = await screenTokens({
-    llm: !!env.openrouterKey,
+    llm: false,
+    interval: '5m',
+    rankBy: 'volume',
     minMarketCap: s.screenMinMcap,
-    minVolume: s.screenMinVol,
+    minVolume: 0,
     minLiquidity: s.screenMinLiq,
-    limit: 40,
+    limit: 100,
   });
   stats.scans++;
   stats.lastAt = Date.now();
@@ -117,21 +120,28 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
   const eligible = results.filter(
       (r) =>
         r.token.address &&
-        r.score >= s.minScore &&
         r.verdict !== "skip" &&
         (s.screenMaxMcap <= 0 || (r.token.marketCap ?? 0) <= s.screenMaxMcap) && // farm SMALL-cap (bigger fee share for small capital)
         huntCandidateDecision(now, alerted.get(r.token.address.toLowerCase()) ?? 0, s.cooldownMin,
           cfg.autoLp.enabled && !cfg.autoLp.entryPaused && cfg.autoLp.sources.includes('hunt')).evaluate,
     );
-  const cand = eligible.slice(0, 20);
   const { mapLimit } = await import("../chain/blockscout.js");
-  let dexViable = 0;
-  const qualified = await mapLimit(cand, 5, async (r) => {
-    const market = await dexPairs(r.token.address, Date.now());
-    if (!hasViableDexPool(market, s)) return null;
-    dexViable++;
-    const pool = await qualifyCandidate(r.token.address).catch(() => null);
-    return pool ? { r, pool } : null;
+  const activity = {
+    ...s,
+    minVol5m: cfg.autoLp.huntMinVol5m ?? cfg.watch.minVol5m,
+    minVol1h: cfg.autoLp.huntMinVol1h ?? cfg.watch.minVol1h,
+  };
+  const markets = await mapLimit(eligible.slice(0, 100), 5, async r => ({
+    address: r.token.address.toLowerCase(),
+    pairs: await dexPairs(r.token.address, Date.now()),
+  }));
+  const ranked = rankExactPoolCandidates(eligible, new Map(markets.map(m => [m.address, m.pairs])), activity, Date.now());
+  const cand = ranked.slice(0, 20);
+  const qualified = await mapLimit(cand, 5, async ({result:r}) => {
+    const pool = await qualifyCandidate(r.token.address, undefined, 'usd').catch(() => null);
+    if (!pool) return null;
+    const score = fastPoolScore(pool, activity, Date.now());
+    return score == null ? null : { r: {...r, score, verdict:'ape' as const}, pool };
   });
   // Tokens we ALREADY hold a position in — don't re-alert / risk a duplicate add (the operator asked:
   // "kalau udah ada posisi di token-nya, skip"). maybeAutoLp already dedupes the auto-add, but this also
@@ -167,6 +177,6 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     await hooks?.onCandidate(q.r, q.pool, decision.notify);
   });
   stats.lastFound = found;
-  log.info(formatHuntFunnel({trending:scanned,ranked:results.length,eligible:eligible.length,sampled:cand.length,dexViable,qualified:qualified.filter(Boolean).length,unheld:found}));
+  log.info(formatHuntFunnel({trending:scanned,ranked:results.length,eligible:eligible.length,sampled:cand.length,dexViable:ranked.length,qualified:qualified.filter(Boolean).length,unheld:found}));
   return { found, scanned };
 }
