@@ -5,7 +5,7 @@
  */
 import { cfg } from "../config.js";
 import { scoreCandidate, type Candidate, type Verdict } from "../radar/radar.js";
-import { qualifyCandidate } from "../chain/candidate.js";
+import { qualifyCandidate, formatCandidateRejection } from "../chain/candidate.js";
 import { maybeAutoLp } from "../radar/autolp.js";
 import { notifySpike, notifyNewToken, notifyAutoLp } from "./notify.js";
 import { logger } from "../util/log.js";
@@ -54,8 +54,22 @@ export async function handleSpike(h: SpikeHit): Promise<void> {
   const verdict = await scoreCandidate(candidate).catch(() => null);
   let pool = null;
   if (cfg.scan.enabled) {
-    pool = await qualifyCandidate(h.addr).catch(() => null);
-    if (!pool || screenBlocks(verdict)) return; // needs a busy 3-5% pool AND a passing screen
+    let rejected: Record<string, number> = {};
+    const label = `${String(h.symbol).replace(/[^a-zA-Z0-9_.-]/g, '?').slice(0, 32)} ${h.addr.slice(0, 10)}`;
+    try {
+      pool = await qualifyCandidate(h.addr, reasons => { rejected = reasons; });
+    } catch {
+      log.warn(`reject ${label}: pool lookup threw`);
+      return;
+    }
+    if (!pool) {
+      log.info(`reject ${label}: ${formatCandidateRejection(rejected)}`);
+      return;
+    }
+    if (screenBlocks(verdict)) {
+      log.info(`reject ${label}: radar-screen-blocked`);
+      return;
+    }
   }
   await notifySpike(h, verdict, pool);
   await runAuto(candidate, verdict);

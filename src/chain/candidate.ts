@@ -5,7 +5,7 @@
  */
 import { cfg } from "../config.js";
 import { discoverV4Pools, discoverV4UsdgPools, type V4Pool } from "./v4/discover.js";
-import { dexPairs } from "./dexscreener.js";
+import { dexPairs, type DexPair } from "./dexscreener.js";
 
 export interface QualifiedPool {
   v4: V4Pool;
@@ -30,36 +30,54 @@ export interface QualifiedPool {
  *     so this is skipped rather than blocking).
  * Ranks the survivors by absolute 24h fees (the real earning signal), not raw volume.
  */
-export async function qualifyCandidate(token: string): Promise<QualifiedPool | null> {
-  const s = cfg.scan;
-  const [eth, usd, dex] = await Promise.all([
-    discoverV4Pools(token).catch(() => [] as V4Pool[]),
-    discoverV4UsdgPools(token).catch(() => [] as V4Pool[]),
-    dexPairs(token, Date.now()).catch(() => new Map()),
-  ]);
+export function evaluateCandidatePools(
+  pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan,
+): { pool: QualifiedPool | null; rejected: Record<string, number> } {
   let best: QualifiedPool | null = null;
-  for (const p of [...eth, ...usd]) {
-    if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) continue; // outside the 3-5% band
+  const rejected: Record<string, number> = {};
+  const reject = (reason: string): void => { rejected[reason] = (rejected[reason] ?? 0) + 1; };
+  if (!pools.length) reject('no-v4-pools-returned');
+  for (const p of pools) {
+    if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) { reject('fee-outside-band'); continue; }
     const d = dex.get(p.poolId.toLowerCase());
     const volUsd = d?.vol24h ?? 0;
-    if (volUsd < s.minVolUsd) continue; // not busy enough
+    if (volUsd < s.minVolUsd) { reject(d ? '24h-volume-below-minimum' : 'dex-pair-data-missing'); continue; }
     const liqUsd = d?.liqUsd ?? 0;
     // ANTI-WASH: a pool with big volume but near-zero REAL liquidity is a wash/trap (fake volume; your
     // LP would be ~all the liquidity → exposed to the wash operator + rug). Only assessable when liq is
     // READABLE (>0); v4 singleton liq often reads $0 (unknown → not blocked here).
-    if (liqUsd > 0 && s.minPoolLiqUsd > 0 && liqUsd < s.minPoolLiqUsd) continue; // liq too thin to farm safely
-    if (liqUsd > 0 && s.maxVolLiqRatio > 0 && volUsd / liqUsd > s.maxVolLiqRatio) continue; // vol >> liq = wash
+    if (liqUsd > 0 && s.minPoolLiqUsd > 0 && liqUsd < s.minPoolLiqUsd) { reject('pool-liquidity-below-minimum'); continue; }
+    if (liqUsd > 0 && s.maxVolLiqRatio > 0 && volUsd / liqUsd > s.maxVolLiqRatio) { reject('volume-liquidity-ratio-too-high'); continue; }
     const feesUsd = volUsd * (p.fee / 1e6); // fee ppm → rate (30000ppm = 3%)
-    if (feesUsd < s.minPoolFeesUsd) continue; // #1: not enough fees generated to be worth farming
+    if (feesUsd < s.minPoolFeesUsd) { reject('24h-fees-below-minimum'); continue; }
     const feeYieldPct = liqUsd > 0 ? (feesUsd / liqUsd) * 100 : 0;
-    if (liqUsd > 0 && s.minFeeYieldPct > 0 && feeYieldPct < s.minFeeYieldPct) continue; // #1: TVL-relative yield too thin
+    if (liqUsd > 0 && s.minFeeYieldPct > 0 && feeYieldPct < s.minFeeYieldPct) { reject('fee-yield-below-minimum'); continue; }
     const volPct = Math.max(Math.abs(d?.chgH1 ?? 0), Math.abs(d?.chgH6 ?? 0));
     // #1 volume-SPIKE: recent hour vs the 24h-average hour. >1 = heating up NOW (the Meteora "hunt the
     // spike" idea). A stale pool (all its 24h volume happened hours ago) reads spikeX ~0 → skip when armed.
     const volH1 = d?.volH1 ?? 0;
     const spikeX = volUsd > 0 ? volH1 / (volUsd / 24) : 0;
-    if (s.minSpikeX > 0 && spikeX < s.minSpikeX) continue; // require recent momentum (active now, not stale)
+    if (s.minSpikeX > 0 && spikeX < s.minSpikeX) { reject('hourly-spike-below-minimum'); continue; }
     if (!best || feesUsd > best.feesUsd) best = { v4: p, fee: p.fee, quote: p.quote, volUsd, liqUsd, feesUsd, feeYieldPct, volPct, volH1, spikeX,vol5m:d?.vol5m,buys5m:d?.buys5m,sells5m:d?.sells5m,observedAt:d?.observedAt };
   }
-  return best;
+  return { pool: best, rejected };
+}
+
+export function formatCandidateRejection(rejected: Record<string, number>): string {
+  const parts = Object.entries(rejected)
+    .filter(([, count]) => Number.isSafeInteger(count) && count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([reason, count]) => `${reason}=${count}`);
+  return parts.length ? parts.join(', ') : 'unclassified-pool-rejection';
+}
+
+export async function qualifyCandidate(token: string, onRejected?: (reasons: Record<string, number>) => void): Promise<QualifiedPool | null> {
+  const [eth, usd, dex] = await Promise.all([
+    discoverV4Pools(token).catch(() => [] as V4Pool[]),
+    discoverV4UsdgPools(token).catch(() => [] as V4Pool[]),
+    dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
+  ]);
+  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan);
+  if (!result.pool) onRejected?.(result.rejected);
+  return result.pool;
 }
