@@ -93,6 +93,8 @@ const AutoLpSchema = z.object({
   requireAction: z.enum(["ape", "watch", "skip"]).default("ape"),
   requireLlm: z.boolean().default(true), // need an LLM verdict, not just GMGN
   requireGmgn: z.boolean().default(false),
+  huntMinVol5m: z.number().finite().positive().optional(), // exact-pool floor for hunt only; absent = watch floor
+  huntMinVol1h: z.number().finite().positive().optional(),
   minLiqUsd: z.number().default(20000), // hard liquidity floor
   maxTaxPct: z.number().default(5), // hard tax ceiling (GMGN)
   maxOpen: z.number().int().default(3), // max concurrent LP positions total

@@ -34,6 +34,20 @@ export function llmFailure(verdict:Verdict|null,required:boolean,action:string,m
   return null;
 }
 
+export function heuristicScreenFailure(verdict:Verdict|null,minScore:number,requiredAction:string):string|null {
+  if (!verdict?.llm || !['model','heuristic'].includes(verdict.llmSource??'')) return 'screen verdict missing';
+  const rank = (x:string) => x === 'ape' ? 2 : x === 'watch' ? 1 : x === 'skip' ? 0 : -1;
+  if (!Number.isFinite(verdict.llm.score) || verdict.llm.score < minScore || verdict.llm.score > 100 ||
+      rank(verdict.llm.action) < rank(requiredAction)) return 'screen score/action below pilot threshold';
+  return null;
+}
+
+export function activityLimits(source:string, watch:{minVol5m:number;minVol1h:number}, auto:{huntMinVol5m?:number;huntMinVol1h?:number}):{minVol5m:number;minVol1h:number} {
+  return source === 'hunt'
+    ? {minVol5m:auto.huntMinVol5m??watch.minVol5m,minVol1h:auto.huntMinVol1h??watch.minVol1h}
+    : {minVol5m:watch.minVol5m,minVol1h:watch.minVol1h};
+}
+
 export function poolActivityFailure(p:{vol5m?:number;volH1?:number;buys5m?:number;sells5m?:number;observedAt?:number},limits:{minVol5m:number;minVol1h:number},now:number):string|null {
   if(!Number.isFinite(now)||!Number.isFinite(p.observedAt)||p.observedAt!<=0||p.observedAt!>now||now-p.observedAt!>60_000)return 'exact pool activity stale or missing';
   if([p.vol5m,p.volH1,limits.minVol5m,limits.minVol1h].some(n=>typeof n!=='number'||!Number.isFinite(n)||n<0))return 'exact pool volume missing or invalid';

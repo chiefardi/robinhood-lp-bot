@@ -11,7 +11,19 @@ import { logger } from "../util/log.js";
 const log = logger("hunt");
 
 export interface ScanHooks {
-  onCandidate: (r: ScreenResult, pool: QualifiedPool) => void;
+  onCandidate: (r: ScreenResult, pool: QualifiedPool, notify: boolean) => void | Promise<void>;
+}
+
+export function huntCandidateDecision(now:number,lastAlert:number,cooldownMin:number,autoHuntEnabled:boolean):{evaluate:boolean;notify:boolean} {
+  const notify = lastAlert <= 0 || now - lastAlert >= cooldownMin * 60_000;
+  return { evaluate: notify || autoHuntEnabled, notify };
+}
+
+export async function dispatchCandidateHooks<T>(rows:T[], onCandidate:(row:T)=>void|Promise<void>):Promise<void> {
+  for (const row of rows) {
+    try { await onCandidate(row); }
+    catch (e) { log.warn(`candidate callback failed: ${(e as Error).message.slice(0, 90)}`); }
+  }
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -81,7 +93,8 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
         r.score >= s.minScore &&
         r.verdict !== "skip" &&
         (s.screenMaxMcap <= 0 || (r.token.marketCap ?? 0) <= s.screenMaxMcap) && // farm SMALL-cap (bigger fee share for small capital)
-        now - (alerted.get(r.token.address.toLowerCase()) ?? 0) >= s.cooldownMin * 60_000,
+        huntCandidateDecision(now, alerted.get(r.token.address.toLowerCase()) ?? 0, s.cooldownMin,
+          cfg.autoLp.enabled && !cfg.autoLp.entryPaused && cfg.autoLp.sources.includes('hunt')).evaluate,
     )
     .slice(0, 20);
   const { mapLimit } = await import("../chain/blockscout.js");
@@ -105,21 +118,23 @@ async function runScan(): Promise<{ found: number; scanned: number }> {
     /* best-effort — if holdings can't be read, don't block alerts */
   }
   let found = 0;
-  for (const q of qualified) {
-    if (!q) continue;
+  await dispatchCandidateHooks(qualified, async q => {
+    if (!q) return;
     if (held.has(q.r.token.address.toLowerCase())) {
       log.info(`skip candidate ${q.r.token.symbol} — a position already exists for that token`);
-      continue;
+      return;
     }
-    alerted.set(q.r.token.address.toLowerCase(), now);
+    const decision = huntCandidateDecision(now, alerted.get(q.r.token.address.toLowerCase()) ?? 0, s.cooldownMin,
+      cfg.autoLp.enabled && !cfg.autoLp.entryPaused && cfg.autoLp.sources.includes('hunt'));
+    if (decision.notify) alerted.set(q.r.token.address.toLowerCase(), now);
     found++;
-    stats.alerts++;
+    if (decision.notify) stats.alerts++;
     const mc = q.r.token.marketCap ?? 0;
-    log.info(
+    if (decision.notify) log.info(
       `candidate ${q.r.token.symbol} · mcap $${(mc / 1e3).toFixed(0)}k · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · score ${q.r.score}`,
     );
-    hooks?.onCandidate(q.r, q.pool);
-  }
+    await hooks?.onCandidate(q.r, q.pool, decision.notify);
+  });
   stats.lastFound = found;
   log.info(`hunt scan: ${scanned} trending → ${cand.length} passed screening → ${found} candidates (active 3-5% pools)`);
   return { found, scanned };

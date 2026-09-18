@@ -174,9 +174,9 @@ export async function run(): Promise<void> {
   startWatch();
   void startFeed(); // no-op unless cfg.feed.enabled
   startScan({
-    onCandidate: (r, p) => {
-      void notifyCandidate(r, p).catch(() => {}); // alert
-      void handleHuntCandidate(r, p).catch(() => {}); // auto-LP if /auto on + gate met
+    onCandidate: (r, p, notify) => {
+      if (notify) void notifyCandidate(r, p).catch(() => {}); // alert cooldown does not suppress entry checks
+      return handleHuntCandidate(r, p); // await auto preflight before evaluating the next candidate
     },
   }); // hunter (cfg.scan.enabled)
   startManage({
