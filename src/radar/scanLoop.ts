@@ -48,6 +48,10 @@ export function hasViableDexPool(pairs:Map<string,DexPair>, limits:Pick<typeof c
   });
 }
 
+export function formatHuntFunnel(x:{trending:number;ranked:number;eligible:number;sampled:number;dexViable:number;qualified:number;unheld:number}):string {
+  return `hunt funnel: ${x.trending} trending → ${x.ranked} ranked → ${x.eligible} eligible → ${x.sampled} sampled → ${x.dexViable} DEX-viable → ${x.qualified} qualified → ${x.unheld} unheld`;
+}
+
 let timer: ReturnType<typeof setInterval> | null = null;
 let hooks: ScanHooks | null = null;
 const alerted = new Map<string, number>(); // token → last alert ts (cooldown)
@@ -110,8 +114,7 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
   stats.lastScanned = scanned;
   const now = Date.now();
   // survivors past the score/verdict floor and out of cooldown → check the 3-5% pool in parallel
-  const cand = results
-    .filter(
+  const eligible = results.filter(
       (r) =>
         r.token.address &&
         r.score >= s.minScore &&
@@ -119,12 +122,14 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
         (s.screenMaxMcap <= 0 || (r.token.marketCap ?? 0) <= s.screenMaxMcap) && // farm SMALL-cap (bigger fee share for small capital)
         huntCandidateDecision(now, alerted.get(r.token.address.toLowerCase()) ?? 0, s.cooldownMin,
           cfg.autoLp.enabled && !cfg.autoLp.entryPaused && cfg.autoLp.sources.includes('hunt')).evaluate,
-    )
-    .slice(0, 20);
+    );
+  const cand = eligible.slice(0, 20);
   const { mapLimit } = await import("../chain/blockscout.js");
+  let dexViable = 0;
   const qualified = await mapLimit(cand, 5, async (r) => {
     const market = await dexPairs(r.token.address, Date.now());
     if (!hasViableDexPool(market, s)) return null;
+    dexViable++;
     const pool = await qualifyCandidate(r.token.address).catch(() => null);
     return pool ? { r, pool } : null;
   });
@@ -162,6 +167,6 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     await hooks?.onCandidate(q.r, q.pool, decision.notify);
   });
   stats.lastFound = found;
-  log.info(`hunt scan: ${scanned} trending → ${cand.length} passed screening → ${found} candidates (active 3-5% pools)`);
+  log.info(formatHuntFunnel({trending:scanned,ranked:results.length,eligible:eligible.length,sampled:cand.length,dexViable,qualified:qualified.filter(Boolean).length,unheld:found}));
   return { found, scanned };
 }

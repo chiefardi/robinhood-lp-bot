@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../src/radar/entry-guard.ts';
 import { dispatchCandidateHooks, huntCandidateDecision, singleFlight, hasViableDexPool } from '../src/radar/scanLoop.ts';
+import * as hunt from '../src/radar/scanLoop.ts';
+
+test('hunt telemetry distinguishes ranked, eligible, sampled and qualified pools', () => {
+  assert.equal(typeof hunt.formatHuntFunnel, 'function');
+  assert.equal(hunt.formatHuntFunnel({ trending: 100, ranked: 40, eligible: 27, sampled: 20, dexViable: 5, qualified: 3, unheld: 2 }),
+    'hunt funnel: 100 trending → 40 ranked → 27 eligible → 20 sampled → 5 DEX-viable → 3 qualified → 2 unheld');
+});
 
 test('hunt uses its own exact-pool floors without weakening watch', () => {
   const watch = { minVol5m: 100_000, minVol1h: 1_000_000 };

@@ -5,7 +5,7 @@ import { inOorCooldown } from './oorcool.js';
 import { logger } from '../util/log.js';
 import { gmgnToken } from './gmgn.js';
 import { riskStore,validateExitSettings } from './auto-risk.js';
-import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
+import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
 import type { Candidate, Verdict } from './radar.js';
 
 const log = logger('autolp');
@@ -44,12 +44,15 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (tracked.some(r=>r.token.toLowerCase() === candidate.token.toLowerCase())) throw new Error('position already exists for token');
         await strictInventory(tracked.map(r=>r.tokenId));
         const g = await gmgnToken(candidate.token,{holders:true});
+        log.info(`preflight ${candidate.symbol}: ${formatHolderTelemetry(g?.holderEvidence)}`);
         const failure = securityFailure(g, a.maxTaxPct, Date.now());
         if (failure) throw new Error(failure);
         const {qualifyCandidate} = await import('../chain/candidate.js');
         const q = await qualifyCandidate(candidate.token);
         if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
-        const activity=poolActivityFailure(q,activityLimits(candidate.source,cfg.watch,a),Date.now());
+        const limits=activityLimits(candidate.source,cfg.watch,a);
+        log.info(`preflight ${candidate.symbol}: ${formatPoolActivityTelemetry(q,limits)}`);
+        const activity=poolActivityFailure(q,limits,Date.now());
         if(activity)throw new Error(activity);
         if (q.quote !== 'usd') throw new Error('ETH auto route blocked: exact qualified pool execution unavailable');
         if (!Number.isFinite(q.liqUsd) || q.liqUsd <= 0 || q.liqUsd < Math.max(a.minLiqUsd,cfg.scan.minPoolLiqUsd)) throw new Error('qualified pool liquidity missing or too low');

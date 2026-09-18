@@ -3,7 +3,7 @@ import type { GmgnData } from './gmgn.js';
 import type { Verdict } from './radar.js';
 import type { V4Pool } from '../chain/v4/discover.js';
 import { ethers } from 'ethers';
-import {holderFailure} from './holder-coverage.js';
+import {holderFailure, type HolderEvidence} from './holder-coverage.js';
 
 export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void}
 export function validateEntryBudget(pool:V4Pool,amountEth:string,o:StrictEntryBudget,now=Date.now()):void {
@@ -46,6 +46,20 @@ export function activityLimits(source:string, watch:{minVol5m:number;minVol1h:nu
   return source === 'hunt'
     ? {minVol5m:auto.huntMinVol5m??watch.minVol5m,minVol1h:auto.huntMinVol1h??watch.minVol1h}
     : {minVol5m:watch.minVol5m,minVol1h:watch.minVol1h};
+}
+
+/** Numbers behind an activity rejection; observations only, never an alternate gate. */
+export function formatPoolActivityTelemetry(p:{vol5m?:number;volH1?:number;buys5m?:number;sells5m?:number}, limits:{minVol5m:number;minVol1h:number}):string {
+  const amount=(n:number|undefined)=>typeof n==='number'&&Number.isFinite(n)?`$${Math.round(n)}`:'unknown';
+  const trades=(n:number|undefined)=>Number.isSafeInteger(n)?String(n):'unknown';
+  return `pool m5=${amount(p.vol5m)}/${amount(limits.minVol5m)} h1=${amount(p.volH1)}/${amount(limits.minVol1h)} trades5m=${trades(p.buys5m)}B/${trades(p.sells5m)}S`;
+}
+
+/** Aggregate holder evidence only; no wallet identities or raw vendor payloads. */
+export function formatHolderTelemetry(e:HolderEvidence|undefined):string {
+  if(e?.status!=='ok'||![e.coverageRate,e.unobservedRate,e.taggedRiskUpperRate].every(n=>typeof n==='number'&&Number.isFinite(n)))return 'holders coverage=unknown';
+  const pct=(n:number)=>`${Math.round(n*100)}%`;
+  return `holders coverage=${pct(e.coverageRate!)} unseen=${pct(e.unobservedRate!)} tagged-upper=${pct(e.taggedRiskUpperRate!)} rows=${Number.isSafeInteger(e.rows)?e.rows:'unknown'}`;
 }
 
 export function poolActivityFailure(p:{vol5m?:number;volH1?:number;buys5m?:number;sells5m?:number;observedAt?:number},limits:{minVol5m:number;minVol1h:number},now:number):string|null {
