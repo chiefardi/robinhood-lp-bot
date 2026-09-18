@@ -23,7 +23,8 @@ for(const expired of ['GMGN','activity'])test(`${expired} expiring during mint p
   };
   const code=ts.transpileModule(readFileSync(new URL('../src/radar/autolp.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const api={};vm.runInNewContext(code,{exports:api,require(name){assert.ok(Object.hasOwn(deps,name),name);return deps[name]},Date:Clock});
-  const result=await api.maybeAutoLp({token:'token',symbol:'TEST',source:'hunt'},null);
+  const verdict={llm:{action:'ape',score:80,summary:'test fixture'},llmSource:'heuristic',gmgn:null};
+  const result=await api.maybeAutoLp({token:'token',symbol:'TEST',source:'hunt'},verdict);
   assert.equal(sends,0);
   assert.equal(failed,1);
   assert.equal(result.opened,false);
