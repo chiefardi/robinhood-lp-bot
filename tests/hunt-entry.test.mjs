@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../src/radar/entry-guard.ts';
-import { dispatchCandidateHooks, huntCandidateDecision } from '../src/radar/scanLoop.ts';
+import { dispatchCandidateHooks, huntCandidateDecision, singleFlight } from '../src/radar/scanLoop.ts';
 
 test('hunt uses its own exact-pool floors without weakening watch', () => {
   const watch = { minVol5m: 100_000, minVol1h: 1_000_000 };
@@ -35,4 +35,17 @@ test('hunt enforces configured score and action even without an LLM key', () => 
   assert.equal(heuristicScreenFailure(verdict(74, 'ape'), 75, 'ape'), 'screen score/action below pilot threshold');
   assert.equal(heuristicScreenFailure(verdict(80, 'watch'), 75, 'ape'), 'screen score/action below pilot threshold');
   assert.equal(heuristicScreenFailure(null, 75, 'ape'), 'screen verdict missing');
+});
+
+test('a slow hunt scan is shared instead of launching overlapping scans', async () => {
+  let runs = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const scan = singleFlight(async () => { runs++; await gate; return runs; });
+  const first = scan();
+  const second = scan();
+  assert.equal(runs, 1);
+  release();
+  assert.deepEqual(await Promise.all([first, second]), [1, 1]);
+  assert.equal(await scan(), 2);
 });
