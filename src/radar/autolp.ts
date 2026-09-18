@@ -5,7 +5,7 @@ import { inOorCooldown } from './oorcool.js';
 import { logger } from '../util/log.js';
 import { gmgnToken } from './gmgn.js';
 import { riskStore,validateExitSettings } from './auto-risk.js';
-import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
+import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, expectedPoolFailure, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
 import type { Candidate, Verdict } from './radar.js';
 
 const log = logger('autolp');
@@ -48,9 +48,11 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         const failure = securityFailure(g, a.maxTaxPct, Date.now());
         if (failure) throw new Error(failure);
         const {qualifyCandidate} = await import('../chain/candidate.js');
-        const q = await qualifyCandidate(candidate.token, undefined, 'usd');
-        if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
         const limits=activityLimits(candidate.source,cfg.watch,a);
+        const q = await qualifyCandidate(candidate.token, undefined, 'usd', {...limits,now:Date.now()});
+        if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
+        const changedPool=expectedPoolFailure(candidate.expectedPoolId,q.v4.poolId);
+        if(changedPool)throw new Error(changedPool);
         log.info(`preflight ${candidate.symbol}: ${formatPoolActivityTelemetry(q,limits)}`);
         const activity=poolActivityFailure(q,limits,Date.now());
         if(activity)throw new Error(activity);

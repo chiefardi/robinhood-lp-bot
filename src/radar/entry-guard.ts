@@ -42,6 +42,12 @@ export function heuristicScreenFailure(verdict:Verdict|null,minScore:number,requ
   return null;
 }
 
+export function expectedPoolFailure(expected:string|undefined,actual:string):string|null {
+  if(!expected)return null;
+  if(!/^0x[0-9a-f]{64}$/i.test(expected)||!/^0x[0-9a-f]{64}$/i.test(actual)||expected.toLowerCase()!==actual.toLowerCase())return 'selected pool changed since hunt; await fresh scan';
+  return null;
+}
+
 export function activityLimits(source:string, watch:{minVol5m:number;minVol1h:number}, auto:{huntMinVol5m?:number;huntMinVol1h?:number}):{minVol5m:number;minVol1h:number} {
   return source === 'hunt'
     ? {minVol5m:auto.huntMinVol5m??watch.minVol5m,minVol1h:auto.huntMinVol1h??watch.minVol1h}

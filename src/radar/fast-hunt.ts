@@ -1,6 +1,7 @@
 import type { ScreenResult } from './screen.js';
 import type { DexPair } from '../chain/dexscreener.js';
 import { poolActivityFailure } from './entry-guard.js';
+import { USDG } from '../chain/v4/discover.js';
 
 export interface FastHuntLimits {
   minVolUsd:number;minPoolFeesUsd:number;feeMaxPpm:number;minPoolLiqUsd:number;
@@ -14,6 +15,7 @@ export function rankExactPoolCandidates(rows:ScreenResult[],pairsByToken:Map<str
     for(const p of pairsByToken.get(result.token.address.toLowerCase())?.values()??[]){
       const v4=p.version.toLowerCase()==='v4'||(p.version===''&&/^0x[0-9a-f]{64}$/i.test(p.pairAddr));
       if(!v4||!Number.isFinite(p.vol24h)||p.vol24h<limits.minVolUsd||p.vol24h*limits.feeMaxPpm/1e6<limits.minPoolFeesUsd)continue;
+      if(p.baseTokenAddress?.toLowerCase()!==USDG.toLowerCase()&&p.quoteTokenAddress?.toLowerCase()!==USDG.toLowerCase())continue;
       if(p.liqUsd>0&&p.liqUsd<limits.minPoolLiqUsd)continue;
       if(fastPoolScore(p,limits,now)===null)continue;
       best=Math.max(best,p.vol5m!);

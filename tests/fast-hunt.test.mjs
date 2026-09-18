@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { screenTokens } from '../src/radar/screen.ts';
 import { rankExactPoolCandidates, fastPoolScore } from '../src/radar/fast-hunt.ts';
 import * as pipeline from '../src/telegram/pipeline.ts';
+import { dexPairs } from '../src/chain/dexscreener.ts';
+import * as guard from '../src/radar/entry-guard.ts';
 
 const trend = (symbol, volume, overrides = {}) => ({
   address: symbol === 'DOG' ? '0x' + 'a'.repeat(40) : '0x' + 'b'.repeat(40),
@@ -32,6 +34,7 @@ test('fast hunt keeps a high-volume meme ahead of a lower-volume utility token',
 const floors = { minVolUsd: 10_000, minPoolFeesUsd: 250, feeMaxPpm: 50_000, minPoolLiqUsd: 50_000, minVol5m: 1_000, minVol1h: 5_000 };
 const pair = (vol5m, volH1, extra = {}) => ({
   pairAddr: '0x' + 'c'.repeat(64), version: 'v4', vol24h: 30_000, liqUsd: 80_000,
+  baseTokenAddress:'0x'+'a'.repeat(40), quoteTokenAddress:'0x5fc5360d0400a0fd4f2af552add042d716f1d168',
   vol5m, volH1, buys5m: 3, sells5m: 2, observedAt: 1000, ...extra,
 });
 const row = (symbol, score, volume) => ({ token: trend(symbol, volume), score, kind: 'meme', community: 'clear', fomo: 50, flags: [] });
@@ -63,9 +66,38 @@ test('fast hunt activity score starts at 75 and rises with exact-pool volume', (
   assert.equal(fastPoolScore(pair(100_000, 100_000, { sells5m: 0 }), floors, 1000), null);
 });
 
+test('fast hunt excludes busy ETH-only pools before spending its qualification budget', () => {
+  const r=row('DOG',80,200_000);
+  const eth=pair(100_000,200_000,{quoteTokenAddress:'0x'+'e'.repeat(40)});
+  const maps=new Map([[r.token.address.toLowerCase(),new Map([['eth',eth]])]]);
+  assert.deepEqual(rankExactPoolCandidates([r],maps,floors,1000),[]);
+});
+
+test('DexScreener enrichment carries token-pair identity into the shortlist', async () => {
+  const previous=globalThis.fetch;
+  const token='0x'+'9'.repeat(40);
+  globalThis.fetch=async()=>({json:async()=>({pairs:[{
+    chainId:'robinhood',pairAddress:'0x'+'8'.repeat(64),dexId:'uniswap',labels:['v4'],
+    baseToken:{address:token},quoteToken:{address:'0x5fc5360d0400a0fd4f2af552add042d716f1d168'},
+    volume:{h24:30_000,h1:10_000,m5:2_000},txns:{m5:{buys:4,sells:2}},liquidity:{usd:80_000},
+  }]})});
+  try {
+    const p=[...(await dexPairs(token,1000)).values()][0];
+    assert.equal(p.baseTokenAddress,token.toLowerCase());
+    assert.equal(p.quoteTokenAddress,'0x5fc5360d0400a0fd4f2af552add042d716f1d168');
+  } finally {globalThis.fetch=previous}
+});
+
 test('hunt forwards the chosen pool one-hour volume, not five-minute token volume', () => {
   assert.equal(typeof pipeline.buildHuntCandidate, 'function');
-  const candidate = pipeline.buildHuntCandidate(row('DOG', 82, 90_000), {liqUsd:80_000,volH1:12_000,vol5m:2_000,marketCap:500_000});
+  const candidate = pipeline.buildHuntCandidate(row('DOG', 82, 90_000), {liqUsd:80_000,volH1:12_000,vol5m:2_000,v4:{poolId:'0x'+'c'.repeat(64)},marketCap:500_000});
   assert.equal(candidate.source, 'hunt');
   assert.equal(candidate.vol1h, 12_000);
+  assert.equal(candidate.expectedPoolId,'0x'+'c'.repeat(64));
+});
+
+test('funded preflight blocks a changed pool ID before it can reserve capital', () => {
+  assert.equal(typeof guard.expectedPoolFailure,'function');
+  assert.equal(guard.expectedPoolFailure('0x'+'a'.repeat(64),'0x'+'b'.repeat(64)),'selected pool changed since hunt; await fresh scan');
+  assert.equal(guard.expectedPoolFailure('0x'+'a'.repeat(64),'0x'+'a'.repeat(64)),null);
 });

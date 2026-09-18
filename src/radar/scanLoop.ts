@@ -14,11 +14,29 @@ const log = logger("hunt");
 
 export interface ScanHooks {
   onCandidate: (r: ScreenResult, pool: QualifiedPool, notify: boolean) => void | Promise<void>;
+  onWarning?: (message:string)=>void|Promise<void>;
 }
 
 export function huntCandidateDecision(now:number,lastAlert:number,cooldownMin:number,autoHuntEnabled:boolean):{evaluate:boolean;notify:boolean} {
   const notify = lastAlert <= 0 || now - lastAlert >= cooldownMin * 60_000;
   return { evaluate: notify || autoHuntEnabled, notify };
+}
+
+export function huntEvaluationDue(now:number,last:{at:number;vol5m:number}|undefined,currentVol5m:number,minVol5m:number):boolean {
+  if(!last)return true;
+  return now-last.at>=15*60_000 || (currentVol5m>=minVol5m && currentVol5m>=last.vol5m*2);
+}
+
+export function scanWarningDue(now:number,last:number):boolean {
+  return last<=0 || now-last>=15*60_000;
+}
+
+export function selectQualificationBatch<T extends {address:string;vol5m:number}>(rows:T[],checked:Map<string,{at:number;vol5m:number}>,now:number,minVol5m:number,max=12):T[] {
+  return rows.filter(r=>huntEvaluationDue(now,checked.get(r.address.toLowerCase()),r.vol5m,minVol5m)).slice(0,max);
+}
+
+export function selectHuntEvaluations<T extends {address:string;vol5m:number}>(rows:T[],last:Map<string,{at:number;vol5m:number}>,held:Set<string>,now:number,minVol5m:number,auto:boolean):T[] {
+  return rows.filter(r=>!held.has(r.address.toLowerCase())&&(!auto||huntEvaluationDue(now,last.get(r.address.toLowerCase()),r.vol5m,minVol5m))).slice(0,auto?2:20);
 }
 
 export async function dispatchCandidateHooks<T>(rows:T[], onCandidate:(row:T)=>void|Promise<void>):Promise<void> {
@@ -56,6 +74,9 @@ export function formatHuntFunnel(x:{trending:number;ranked:number;eligible:numbe
 let timer: ReturnType<typeof setInterval> | null = null;
 let hooks: ScanHooks | null = null;
 const alerted = new Map<string, number>(); // token → last alert ts (cooldown)
+const evaluated = new Map<string,{at:number;vol5m:number}>(); // avoid repeated GMGN preflights on unchanged rejects
+const qualificationChecked = new Map<string,{at:number;vol5m:number}>(); // bounded rotating RPC batch
+let lastWarningAt=0;
 const stats = { scans: 0, alerts: 0, lastAt: 0, lastFound: 0, lastScanned: 0 };
 
 /** Register hooks (pass at boot) and start the timer when enabled. Called again by /hunt on. */
@@ -94,7 +115,13 @@ async function tick(): Promise<void> {
   try {
     await runScan();
   } catch (e) {
-    log.warn(`scan failed: ${(e as Error).message.slice(0, 90)}`);
+    const message=`Hunt scan failed: ${(e as Error).message.slice(0, 120)}`;
+    log.warn(message);
+    const now=Date.now();
+    if(scanWarningDue(now,lastWarningAt)) {
+      lastWarningAt=now;
+      try { await hooks?.onWarning?.(message); } catch (warningError) { log.warn(`scan warning delivery failed: ${(warningError as Error).message.slice(0,90)}`); }
+    }
   }
 }
 
@@ -112,6 +139,7 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     minLiquidity: s.screenMinLiq,
     limit: 100,
   });
+  if(scanned===0) throw new Error('GMGN trend feed returned zero tokens');
   stats.scans++;
   stats.lastAt = Date.now();
   stats.lastScanned = scanned;
@@ -136,13 +164,17 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     pairs: await dexPairs(r.token.address, Date.now()),
   }));
   const ranked = rankExactPoolCandidates(eligible, new Map(markets.map(m => [m.address, m.pairs])), activity, Date.now());
-  const cand = ranked.slice(0, 20);
-  const qualified = await mapLimit(cand, 5, async ({result:r}) => {
-    const pool = await qualifyCandidate(r.token.address, undefined, 'usd').catch(() => null);
+  const cand = selectQualificationBatch(ranked.map(x=>({address:x.result.token.address,vol5m:x.vol5m??0,x})),qualificationChecked,now,activity.minVol5m,12);
+  const qualified = await mapLimit(cand, 3, async ({address,vol5m,x}) => {
+    qualificationChecked.set(address.toLowerCase(),{at:now,vol5m});
+    const {result:r}=x;
+    const pool = await qualifyCandidate(r.token.address, undefined, 'usd', {...activity,now:Date.now()}).catch(() => null);
     if (!pool) return null;
     const score = fastPoolScore(pool, activity, Date.now());
     return score == null ? null : { r: {...r, score, verdict:'ape' as const}, pool };
   });
+  const chosen = qualified.filter((q):q is NonNullable<typeof q>=>q!==null)
+    .sort((a,b)=>(b.pool.vol5m??0)-(a.pool.vol5m??0));
   // Tokens we ALREADY hold a position in — don't re-alert / risk a duplicate add (the operator asked:
   // "kalau udah ada posisi di token-nya, skip"). maybeAutoLp already dedupes the auto-add, but this also
   // silences the noisy repeat ALERT (and the manual "LP <token>" tap that would open a 2nd position).
@@ -158,13 +190,11 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
   } catch {
     /* best-effort — if holdings can't be read, don't block alerts */
   }
+  const auto=cfg.autoLp.enabled&&!cfg.autoLp.entryPaused&&cfg.autoLp.sources.includes('hunt');
+  const selected=selectHuntEvaluations(chosen.map(q=>({address:q.r.token.address,vol5m:q.pool.vol5m??0,q})),evaluated,held,now,activity.minVol5m,auto);
   let found = 0;
-  await dispatchCandidateHooks(qualified, async q => {
-    if (!q) return;
-    if (held.has(q.r.token.address.toLowerCase())) {
-      log.info(`skip candidate ${q.r.token.symbol} — a position already exists for that token`);
-      return;
-    }
+  await dispatchCandidateHooks(selected, async ({q,address,vol5m}) => {
+    if(auto)evaluated.set(address.toLowerCase(),{at:now,vol5m});
     const decision = huntCandidateDecision(now, alerted.get(q.r.token.address.toLowerCase()) ?? 0, s.cooldownMin,
       cfg.autoLp.enabled && !cfg.autoLp.entryPaused && cfg.autoLp.sources.includes('hunt'));
     if (decision.notify) alerted.set(q.r.token.address.toLowerCase(), now);

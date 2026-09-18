@@ -14,6 +14,8 @@ const log = logger("dexscreener");
 
 export interface DexPair {
   pairAddr: string; // lowercased pool address (v2/v3) or poolId (v4)
+  baseTokenAddress:string;
+  quoteTokenAddress:string;
   vol24h: number;
   liqUsd: number; // DexScreener's liquidity — accurate for v2/v3, ~0 for v4 on Robinhood
   dexId: string;
@@ -46,6 +48,8 @@ export async function dexPairs(token: string, now: number): Promise<Map<string, 
       if (!pa) continue;
       map.set(pa, {
         pairAddr: pa,
+        baseTokenAddress:String(p.baseToken?.address??'').toLowerCase(),
+        quoteTokenAddress:String(p.quoteToken?.address??'').toLowerCase(),
         vol24h: Number(p.volume?.h24 ?? 0),
         liqUsd: Number(p.liquidity?.usd ?? 0),
         dexId: String(p.dexId ?? ""),

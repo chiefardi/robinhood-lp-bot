@@ -4,6 +4,36 @@ import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../
 import { dispatchCandidateHooks, huntCandidateDecision, singleFlight, hasViableDexPool } from '../src/radar/scanLoop.ts';
 import * as hunt from '../src/radar/scanLoop.ts';
 
+test('armed hunt gives a rejected token fifteen minutes before retry unless pool activity doubles', () => {
+  assert.equal(typeof hunt.huntEvaluationDue,'function');
+  assert.equal(hunt.huntEvaluationDue(100_000,undefined,5_000,5_000),true);
+  assert.equal(hunt.huntEvaluationDue(100_000,{at:90_000,vol5m:5_000},5_500,5_000),false);
+  assert.equal(hunt.huntEvaluationDue(100_000,{at:90_000,vol5m:5_000},10_000,5_000),true);
+  assert.equal(hunt.huntEvaluationDue(1_000_000,{at:90_000,vol5m:5_000},5_500,5_000),true);
+});
+
+test('hunt skips cooled-down leaders and tries at most two fresh tokens per scan', () => {
+  assert.equal(typeof hunt.selectHuntEvaluations,'function');
+  const rows=[{address:'A',vol5m:9_000},{address:'B',vol5m:8_000},{address:'C',vol5m:7_000},{address:'D',vol5m:6_000}];
+  const last=new Map([['a',{at:90_000,vol5m:9_000}]]);
+  assert.deepEqual(hunt.selectHuntEvaluations(rows,last,new Set(),100_000,5_000,true).map(r=>r.address),['B','C']);
+});
+
+test('scanner failure warnings are rate-limited but resume after fifteen minutes', () => {
+  assert.equal(typeof hunt.scanWarningDue,'function');
+  assert.equal(hunt.scanWarningDue(100_000,0),true);
+  assert.equal(hunt.scanWarningDue(100_000,90_000),false);
+  assert.equal(hunt.scanWarningDue(1_000_000,90_000),true);
+});
+
+test('qualification batch is bounded and rotates past recently failed pools', () => {
+  assert.equal(typeof hunt.selectQualificationBatch,'function');
+  const rows=Array.from({length:20},(_,i)=>({address:String(i),vol5m:20_000-i}));
+  const checked=new Map(rows.slice(0,12).map(r=>[r.address,{at:90_000,vol5m:r.vol5m}]));
+  assert.deepEqual(hunt.selectQualificationBatch(rows,checked,100_000,5_000,12).map(r=>r.address),rows.slice(12).map(r=>r.address));
+  assert.equal(hunt.selectQualificationBatch(rows,new Map(),100_000,5_000,12).length,12);
+});
+
 test('hunt telemetry distinguishes ranked, eligible, sampled and qualified pools', () => {
   assert.equal(typeof hunt.formatHuntFunnel, 'function');
   assert.equal(hunt.formatHuntFunnel({ trending: 100, ranked: 40, eligible: 27, sampled: 20, dexViable: 5, qualified: 3, unheld: 2 }),

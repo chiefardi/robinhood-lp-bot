@@ -58,3 +58,28 @@ test('USDG-only qualification does not select a busier ETH pool', () => {
   ]);
   assert.equal(evaluateCandidatePools([eth,pool],dex,limits,'usd').pool?.v4.poolId,poolId);
 });
+
+test('auto qualification selects an active USDG pool over a quiet higher-fee-volume pool', () => {
+  const quiet = {...pool,poolId:'0x'+'e'.repeat(64)};
+  const dex = new Map([
+    [poolId,{...pair,vol5m:2_000,volH1:10_000,observedAt:123}],
+    [quiet.poolId,{...pair,pairAddr:quiet.poolId,vol24h:100_000,vol5m:100,volH1:1_000,observedAt:123}],
+  ]);
+  const activity={minVol5m:1_000,minVol1h:5_000,now:123};
+  assert.equal(evaluateCandidatePools([quiet,pool],dex,limits,'usd',activity).pool?.v4.poolId,poolId);
+});
+
+test('auto qualification rejects hooked pools before an entry reservation', () => {
+  const hooked = {...pool,poolId:'0x'+'f'.repeat(64),poolKey:{...pool.poolKey,hooks:'0x0000000000000000000000000000000000000001'}};
+  const dex = new Map([[hooked.poolId,{...pair,pairAddr:hooked.poolId,vol5m:2_000,volH1:10_000,observedAt:123}]]);
+  const activity={minVol5m:1_000,minVol1h:5_000,now:123};
+  const result=evaluateCandidatePools([hooked],dex,limits,'usd',activity);
+  assert.equal(result.pool,null);
+  assert.equal(result.rejected['hooked-pool'],1);
+});
+
+test('USDG-only qualification does not waste RPC discovery on ETH pools', () => {
+  assert.equal(typeof candidate.discoveryTargetsForQuote,'function');
+  assert.deepEqual(candidate.discoveryTargetsForQuote('usd'),{eth:false,usd:true});
+  assert.deepEqual(candidate.discoveryTargetsForQuote(undefined),{eth:true,usd:true});
+});

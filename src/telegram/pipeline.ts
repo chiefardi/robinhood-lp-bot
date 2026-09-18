@@ -120,5 +120,6 @@ export function buildHuntCandidate(r: ScreenResult, pool: QualifiedPool): Candid
     liq: pool.liqUsd,
     vol1h: pool.volH1,
     fdv: r.token.marketCap,
+    expectedPoolId: pool.v4.poolId,
   };
 }

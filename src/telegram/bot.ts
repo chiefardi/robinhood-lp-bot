@@ -174,6 +174,7 @@ export async function run(): Promise<void> {
   startWatch();
   void startFeed(); // no-op unless cfg.feed.enabled
   startScan({
+    onWarning: message => void send(`⚠️ ${message.replace(/[<>&]/g,'')}`).catch(()=>{}),
     onCandidate: (r, p, notify) => {
       if (notify) void notifyCandidate(r, p).catch(() => {}); // alert cooldown does not suppress entry checks
       return handleHuntCandidate(r, p); // await auto preflight before evaluating the next candidate
