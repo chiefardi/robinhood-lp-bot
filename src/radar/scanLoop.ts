@@ -26,6 +26,19 @@ export async function dispatchCandidateHooks<T>(rows:T[], onCandidate:(row:T)=>v
   }
 }
 
+export function singleFlight<T>(fn:()=>Promise<T>):()=>Promise<T> {
+  let current:Promise<T>|null=null;
+  return () => {
+    if (current) return current;
+    let task:Promise<T>;
+    try { task=fn(); } catch (e) { return Promise.reject(e); }
+    current=task;
+    const clear=()=>{ if (current===task) current=null; };
+    void task.then(clear,clear);
+    return task;
+  };
+}
+
 let timer: ReturnType<typeof setInterval> | null = null;
 let hooks: ScanHooks | null = null;
 const alerted = new Map<string, number>(); // token → last alert ts (cooldown)
@@ -71,7 +84,9 @@ async function tick(): Promise<void> {
   }
 }
 
-async function runScan(): Promise<{ found: number; scanned: number }> {
+const runScan = singleFlight(performScan);
+
+async function performScan(): Promise<{ found: number; scanned: number }> {
   const s = cfg.scan;
   // Loose GMGN gates (the 3-5% pools live on smaller tokens) + thesis/LLM screening.
   const { results, scanned } = await screenTokens({
