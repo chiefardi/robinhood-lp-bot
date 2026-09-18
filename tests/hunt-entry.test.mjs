@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../src/radar/entry-guard.ts';
-import { dispatchCandidateHooks, huntCandidateDecision, singleFlight } from '../src/radar/scanLoop.ts';
+import { dispatchCandidateHooks, huntCandidateDecision, singleFlight, hasViableDexPool } from '../src/radar/scanLoop.ts';
 
 test('hunt uses its own exact-pool floors without weakening watch', () => {
   const watch = { minVol5m: 100_000, minVol1h: 1_000_000 };
@@ -48,4 +48,14 @@ test('a slow hunt scan is shared instead of launching overlapping scans', async 
   release();
   assert.deepEqual(await Promise.all([first, second]), [1, 1]);
   assert.equal(await scan(), 2);
+});
+
+test('Dex prefilter skips only pools that cannot clear existing 24h gates', () => {
+  const limits = { minVolUsd: 10_000, minPoolFeesUsd: 250, feeMaxPpm: 50_000, minPoolLiqUsd: 50_000 };
+  const pair = (vol24h, version = 'v4') => ({ pairAddr: '0x' + 'a'.repeat(64), version, vol24h, liqUsd: 60_000 });
+  assert.equal(hasViableDexPool(new Map([['a', pair(12_000)]]), limits), true);
+  assert.equal(hasViableDexPool(new Map([['a', pair(4_000)]]), limits), false);
+  assert.equal(hasViableDexPool(new Map([['a', pair(12_000, 'v3')]]), limits), false);
+  assert.equal(hasViableDexPool(new Map([['a', { ...pair(12_000), liqUsd: 40_000 }]]), limits), false);
+  assert.equal(hasViableDexPool(new Map(), limits), false);
 });
