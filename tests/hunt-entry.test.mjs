@@ -34,6 +34,14 @@ test('qualification batch is bounded and rotates past recently failed pools', ()
   assert.equal(hunt.selectQualificationBatch(rows,new Map(),100_000,5_000,12).length,12);
 });
 
+test('systemic qualification errors raise a scanner warning instead of looking like ordinary no-pool rejections', () => {
+  assert.equal(typeof hunt.systemicQualificationFailure,'function');
+  assert.equal(hunt.systemicQualificationFailure(12,0),false);
+  assert.equal(hunt.systemicQualificationFailure(12,2),false);
+  assert.equal(hunt.systemicQualificationFailure(12,6),true);
+  assert.equal(hunt.systemicQualificationFailure(1,1),true);
+});
+
 test('hunt telemetry distinguishes ranked, eligible, sampled and qualified pools', () => {
   assert.equal(typeof hunt.formatHuntFunnel, 'function');
   assert.equal(hunt.formatHuntFunnel({ trending: 100, ranked: 40, eligible: 27, sampled: 20, dexViable: 5, qualified: 3, unheld: 2 }),

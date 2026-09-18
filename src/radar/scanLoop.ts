@@ -35,6 +35,10 @@ export function selectQualificationBatch<T extends {address:string;vol5m:number}
   return rows.filter(r=>huntEvaluationDue(now,checked.get(r.address.toLowerCase()),r.vol5m,minVol5m)).slice(0,max);
 }
 
+export function systemicQualificationFailure(attempted:number,errors:number):boolean {
+  return attempted>0 && (errors===attempted || (errors>=3 && errors*2>=attempted));
+}
+
 export function selectHuntEvaluations<T extends {address:string;vol5m:number}>(rows:T[],last:Map<string,{at:number;vol5m:number}>,held:Set<string>,now:number,minVol5m:number,auto:boolean):T[] {
   return rows.filter(r=>!held.has(r.address.toLowerCase())&&(!auto||huntEvaluationDue(now,last.get(r.address.toLowerCase()),r.vol5m,minVol5m))).slice(0,auto?2:20);
 }
@@ -159,20 +163,36 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     minVol5m: cfg.autoLp.huntMinVol5m ?? cfg.watch.minVol5m,
     minVol1h: cfg.autoLp.huntMinVol1h ?? cfg.watch.minVol1h,
   };
+  let marketErrors=0;
   const markets = await mapLimit(eligible.slice(0, 100), 5, async r => ({
     address: r.token.address.toLowerCase(),
-    pairs: await dexPairs(r.token.address, Date.now()),
+    pairs: await dexPairs(r.token.address, Date.now(),{strict:true}).catch(e=>{
+      marketErrors++;
+      log.warn(`market ${r.token.symbol}: ${(e as Error).message.slice(0,90)}`);
+      return new Map<string,DexPair>();
+    }),
   }));
+  if(systemicQualificationFailure(markets.length,marketErrors))throw new Error(`DexScreener lookup failed for ${marketErrors}/${markets.length} tokens`);
   const ranked = rankExactPoolCandidates(eligible, new Map(markets.map(m => [m.address, m.pairs])), activity, Date.now());
   const cand = selectQualificationBatch(ranked.map(x=>({address:x.result.token.address,vol5m:x.vol5m??0,x})),qualificationChecked,now,activity.minVol5m,12);
+  let qualificationErrors=0;
+  const qualificationRejects:Record<string,number>={};
   const qualified = await mapLimit(cand, 3, async ({address,vol5m,x}) => {
     qualificationChecked.set(address.toLowerCase(),{at:now,vol5m});
     const {result:r}=x;
-    const pool = await qualifyCandidate(r.token.address, undefined, 'usd', {...activity,now:Date.now()}).catch(() => null);
+    const pool = await qualifyCandidate(r.token.address, reasons=>{
+      for(const [reason,count] of Object.entries(reasons))qualificationRejects[reason]=(qualificationRejects[reason]??0)+count;
+    }, 'usd', {...activity,now:Date.now()}).catch(e => {
+      qualificationErrors++;
+      log.warn(`qualify ${r.token.symbol}: ${(e as Error).message.slice(0,90)}`);
+      return null;
+    });
     if (!pool) return null;
     const score = fastPoolScore(pool, activity, Date.now());
     return score == null ? null : { r: {...r, score, verdict:'ape' as const}, pool };
   });
+  if(Object.keys(qualificationRejects).length)log.info(`qualification rejects: ${Object.entries(qualificationRejects).map(([reason,count])=>`${reason}=${count}`).join(', ')}`);
+  if(systemicQualificationFailure(cand.length,qualificationErrors))throw new Error(`on-chain qualification failed for ${qualificationErrors}/${cand.length} sampled tokens`);
   const chosen = qualified.filter((q):q is NonNullable<typeof q>=>q!==null)
     .sort((a,b)=>(b.pool.vol5m??0)-(a.pool.vol5m??0));
   // Tokens we ALREADY hold a position in — don't re-alert / risk a duplicate add (the operator asked:

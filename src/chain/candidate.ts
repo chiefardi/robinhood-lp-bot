@@ -84,8 +84,8 @@ export async function qualifyCandidate(token: string, onRejected?: (reasons: Rec
   const target=discoveryTargetsForQuote(quoteFilter);
   const [eth, usd, dex] = await Promise.all([
     target.eth?discoverV4Pools(token).catch(() => [] as V4Pool[]):Promise.resolve([] as V4Pool[]),
-    target.usd?discoverV4UsdgPools(token).catch(() => [] as V4Pool[]):Promise.resolve([] as V4Pool[]),
-    dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
+    target.usd?(autoActivity?discoverV4UsdgPools(token,true):discoverV4UsdgPools(token).catch(() => [] as V4Pool[])):Promise.resolve([] as V4Pool[]),
+    autoActivity?dexPairs(token, Date.now(),{strict:true}):dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
   ]);
   const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan, quoteFilter, autoActivity);
   if (!result.pool) onRejected?.(result.rejected);

@@ -63,7 +63,7 @@ const KEY_TTL_MS = 30 * 60_000; // re-scan getLogs for NEW pools every 30 min
  *   [INITIALIZE_TOPIC, null, tokenTopic]        → token = currency0
  * Falls back to chunked windows if an RPC caps the block range/result set for a huge history.
  */
-async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.Log[]> {
+async function rpcInitLogs(topics: (string | null)[], strict = false): Promise<readonly ethers.Log[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
@@ -83,11 +83,14 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
       const out: ethers.Log[] = [];
       for (let hi = latest; hi >= 0; hi -= SPAN) {
         const lo = Math.max(0, hi - SPAN + 1);
-        const part = await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
+        const part = strict
+          ? await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi })
+          : await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
         out.push(...part);
       }
       return out;
-    } catch {
+    } catch (e) {
+      if (strict) throw e;
       return [];
     }
   }
@@ -226,7 +229,7 @@ export async function discoverV4Pools(token: string): Promise<V4Pool[]> {
 }
 
 /** All live token/USDG v4 pools (token can be currency0 OR currency1, USDG is the other side). */
-export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
+export async function discoverV4UsdgPools(token: string, strict = false): Promise<V4Pool[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
   const sv = stateView();
@@ -248,8 +251,8 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
   // token can be currency0 (topics[2]) OR currency1 (topics[3]); keep only the pools whose OTHER side
   // is USDG. Both queries via the RPC (Blockscout's rate limit made this return empty = false "no pool").
   const logSets = await Promise.all([
-    rpcInitLogs([INITIALIZE_TOPIC, null, tk]),
-    rpcInitLogs([INITIALIZE_TOPIC, null, null, tk]),
+    rpcInitLogs([INITIALIZE_TOPIC, null, tk], strict),
+    rpcInitLogs([INITIALIZE_TOPIC, null, null, tk], strict),
   ]);
   for (const items of logSets) {
     for (const lg of items) {

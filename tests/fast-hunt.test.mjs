@@ -88,6 +88,21 @@ test('DexScreener enrichment carries token-pair identity into the shortlist', as
   } finally {globalThis.fetch=previous}
 });
 
+test('strict DexScreener lookup exposes upstream failures instead of silently returning no pool', async () => {
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=async()=>({ok:false,status:429,json:async()=>({})});
+  try {
+    await assert.rejects(dexPairs('0x'+'f'.repeat(40),Date.now(),{strict:true}),/HTTP 429/);
+  } finally {globalThis.fetch=oldFetch;}
+});
+
+test('strict DexScreener lookup accepts an explicit empty pair list', async () => {
+  const oldFetch=globalThis.fetch;
+  globalThis.fetch=async()=>({ok:true,json:async()=>({pairs:null})});
+  try { assert.equal((await dexPairs('0x'+'d'.repeat(40),Date.now(),{strict:true})).size,0); }
+  finally {globalThis.fetch=oldFetch;}
+});
+
 test('hunt forwards the chosen pool one-hour volume, not five-minute token volume', () => {
   assert.equal(typeof pipeline.buildHuntCandidate, 'function');
   const candidate = pipeline.buildHuntCandidate(row('DOG', 82, 90_000), {liqUsd:80_000,volH1:12_000,vol5m:2_000,v4:{poolId:'0x'+'c'.repeat(64)},marketCap:500_000});
