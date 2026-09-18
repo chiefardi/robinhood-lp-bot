@@ -6,6 +6,7 @@
 import { cfg, env } from "../config.js";
 import { screenTokens, type ScreenResult } from "./screen.js";
 import { qualifyCandidate, type QualifiedPool } from "../chain/candidate.js";
+import { dexPairs, type DexPair } from "../chain/dexscreener.js";
 import { logger } from "../util/log.js";
 
 const log = logger("hunt");
@@ -37,6 +38,14 @@ export function singleFlight<T>(fn:()=>Promise<T>):()=>Promise<T> {
     void task.then(clear,clear);
     return task;
   };
+}
+
+export function hasViableDexPool(pairs:Map<string,DexPair>, limits:Pick<typeof cfg.scan,'minVolUsd'|'minPoolFeesUsd'|'feeMaxPpm'|'minPoolLiqUsd'>):boolean {
+  return [...pairs.values()].some(p => {
+    const v4 = p.version.toLowerCase() === 'v4' || (p.version === '' && /^0x[0-9a-f]{64}$/i.test(p.pairAddr));
+    return v4 && p.vol24h >= limits.minVolUsd && p.vol24h * limits.feeMaxPpm / 1_000_000 >= limits.minPoolFeesUsd &&
+      (p.liqUsd <= 0 || p.liqUsd >= limits.minPoolLiqUsd);
+  });
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -114,6 +123,8 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     .slice(0, 20);
   const { mapLimit } = await import("../chain/blockscout.js");
   const qualified = await mapLimit(cand, 5, async (r) => {
+    const market = await dexPairs(r.token.address, Date.now());
+    if (!hasViableDexPool(market, s)) return null;
     const pool = await qualifyCandidate(r.token.address).catch(() => null);
     return pool ? { r, pool } : null;
   });
