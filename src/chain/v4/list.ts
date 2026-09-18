@@ -178,7 +178,7 @@ export async function listV4Positions(staleOkMs = 0): Promise<V4Row[]> {
     // Blockscout enum failed (rate-limit/lag). Positions opened OUTSIDE the bot (web UI) live ONLY in
     // this enum, so they can transiently vanish from /list until Blockscout recovers. Bot-opened ones
     // still show via the local deps union below. Surfaced so an empty /list isn't mistaken for "no pos".
-    log.warn("/list: Blockscout NFT enumeration empty/failed (rate limit?) — using local deposits (web-UI positions may be temporarily missed)");
+    log.warn("/list: Blockscout NFT enumeration unavailable — using local deposits (web-UI positions may be temporarily missed)");
   }
   ids = [...new Set([...ids, ...Object.keys(deps)])];
   // Drop tokenIds the ledger already knows are CLOSED — deps accumulates every historical mint

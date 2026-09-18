@@ -100,14 +100,7 @@ export async function handleNewToken(a: NewTokenAlert): Promise<void> {
  * "hunt" is an allowed source. maybeAutoLp then opens SINGLE-SIDE on that 3-5% pool.
  */
 export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool): Promise<void> {
-  const candidate: Candidate = {
-    token: r.token.address,
-    symbol: r.token.symbol,
-    source: "hunt",
-    liq: pool.liqUsd,
-    vol1h: r.token.volume,
-    fdv: r.token.marketCap,
-  };
+  const candidate = buildHuntCandidate(r, pool);
   // Use the LLM verdict when present; otherwise synthesize one from the thesis score so a qualified
   // 3-5% candidate outside the LLM top-N is still eligible for auto-add (screen already vetted it).
   const action = r.verdict ?? (r.score >= 75 ? "ape" : r.score >= cfg.scan.minScore ? "watch" : "skip");
@@ -117,4 +110,16 @@ export async function handleHuntCandidate(r: ScreenResult, pool: QualifiedPool):
     llmSource: 'heuristic',
   };
   await runAuto(candidate, verdict);
+}
+
+export function buildHuntCandidate(r: ScreenResult, pool: QualifiedPool): Candidate {
+  return {
+    token: r.token.address,
+    symbol: r.token.symbol,
+    source: "hunt",
+    liq: pool.liqUsd,
+    vol1h: pool.volH1,
+    fdv: r.token.marketCap,
+    expectedPoolId: pool.v4.poolId,
+  };
 }

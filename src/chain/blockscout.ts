@@ -7,6 +7,9 @@
  * empty result = a false "no pool". bsFetch now detects that rate-limit and retries with backoff
  * instead of returning null on the first throttle. Set RH_BLOCKSCOUT_KEY to raise the limit.
  */
+import { logger } from "../util/log.js";
+
+const log = logger("blockscout");
 const BASE = "https://robinhoodchain.blockscout.com";
 const API_KEY = (process.env.RH_BLOCKSCOUT_KEY || "").trim();
 
@@ -21,6 +24,7 @@ export async function bsFetch<T = any>(pathq: string, timeoutMs = 20_000, tries 
   for (let i = 0; i < tries; i++) {
     try {
       const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!r.ok && r.status !== 429) log.warn(`Blockscout HTTP ${r.status} on ${pathq.split("?")[0]}`);
       const body = (await r.json().catch(() => null)) as T | null;
       if (!isRateLimited(r.status, body)) return body; // real answer (incl. a genuine empty) → done
       // else: rate-limited → back off + retry below

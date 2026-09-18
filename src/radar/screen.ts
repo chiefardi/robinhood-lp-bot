@@ -26,6 +26,8 @@ export interface ScreenOpts {
   llm?: boolean; // run LLM thesis on the top survivors
   llmTop?: number; // how many to send to the LLM (default 10)
   limit?: number; // final list size (default 15)
+  rankBy?: "score" | "volume"; // fast hunt keeps the GMGN five-minute volume order
+  trend?: typeof gmgnTrending; // injectable external data boundary
 }
 
 export interface ScreenResult {
@@ -153,7 +155,7 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
   const minLiquidity = opts.minLiquidity ?? 15_000;
   const excludeFlap = opts.excludeFlap !== false;
 
-  const raw = await gmgnTrending({ interval: opts.interval ?? "24h", minMarketCap, minVolume, minLiquidity, orderBy: "volume", limit: 100 });
+  const raw = await (opts.trend ?? gmgnTrending)({ interval: opts.interval ?? "24h", minMarketCap, minVolume, minLiquidity, orderBy: "volume", limit: 100 });
   const scanned = raw.length;
   let excludedFlap = 0;
   let excludedUnsafe = 0;
@@ -176,7 +178,7 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
     survivors.push({ token: t, kind, community: grade, fomo, score, flags: [...cflags, ...sflags] });
   }
 
-  survivors.sort((a, b) => b.score - a.score);
+  survivors.sort((a, b) => opts.rankBy === "volume" ? b.token.volume - a.token.volume : b.score - a.score);
   const trimmed = survivors.slice(0, opts.limit ?? 15);
 
   // LLM thesis on the top survivors (best-effort, bounded concurrency)
@@ -191,7 +193,7 @@ export async function screenTokens(opts: ScreenOpts = {}): Promise<{ results: Sc
         r.score = Math.round(r.score * 0.7 + v.score * 0.3);
       }
     });
-    trimmed.sort((a, b) => b.score - a.score);
+    trimmed.sort((a, b) => opts.rankBy === "volume" ? b.token.volume - a.token.volume : b.score - a.score);
   }
 
   log.info(`screen: ${scanned} trending → ${survivors.length} passed (flap -${excludedFlap}, unsafe -${excludedUnsafe})`);

@@ -2,6 +2,83 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { activityLimits, poolActivityFailure, heuristicScreenFailure } from '../src/radar/entry-guard.ts';
 import { dispatchCandidateHooks, huntCandidateDecision, singleFlight, hasViableDexPool } from '../src/radar/scanLoop.ts';
+import * as hunt from '../src/radar/scanLoop.ts';
+import { stateViewReadFailure, verify } from '../src/chain/v4/discover.ts';
+import { telegramDeliveryFailure } from '../src/telegram/tg.ts';
+
+test('armed hunt gives a rejected token fifteen minutes before retry unless pool activity doubles', () => {
+  assert.equal(typeof hunt.huntEvaluationDue,'function');
+  assert.equal(hunt.huntEvaluationDue(100_000,undefined,5_000,5_000),true);
+  assert.equal(hunt.huntEvaluationDue(100_000,{at:90_000,vol5m:5_000},5_500,5_000),false);
+  assert.equal(hunt.huntEvaluationDue(100_000,{at:90_000,vol5m:5_000},10_000,5_000),true);
+  assert.equal(hunt.huntEvaluationDue(1_000_000,{at:90_000,vol5m:5_000},5_500,5_000),true);
+});
+
+test('hunt skips cooled-down leaders and tries at most two fresh tokens per scan', () => {
+  assert.equal(typeof hunt.selectHuntEvaluations,'function');
+  const rows=[{address:'A',vol5m:9_000},{address:'B',vol5m:8_000},{address:'C',vol5m:7_000},{address:'D',vol5m:6_000}];
+  const last=new Map([['a',{at:90_000,vol5m:9_000}]]);
+  assert.deepEqual(hunt.selectHuntEvaluations(rows,last,new Set(),100_000,5_000,true).map(r=>r.address),['B','C']);
+});
+
+test('scanner failure warnings are rate-limited but resume after fifteen minutes', () => {
+  assert.equal(typeof hunt.scanWarningDue,'function');
+  assert.equal(hunt.scanWarningDue(100_000,0),true);
+  assert.equal(hunt.scanWarningDue(100_000,90_000),false);
+  assert.equal(hunt.scanWarningDue(1_000_000,90_000),true);
+});
+
+test('qualification batch is bounded and rotates past recently failed pools', () => {
+  assert.equal(typeof hunt.selectQualificationBatch,'function');
+  const rows=Array.from({length:20},(_,i)=>({address:String(i),vol5m:20_000-i}));
+  const checked=new Map(rows.slice(0,12).map(r=>[r.address,{at:90_000,vol5m:r.vol5m}]));
+  assert.deepEqual(hunt.selectQualificationBatch(rows,checked,100_000,5_000,12).map(r=>r.address),rows.slice(12).map(r=>r.address));
+  assert.equal(hunt.selectQualificationBatch(rows,new Map(),100_000,5_000,12).length,12);
+});
+
+test('systemic qualification errors raise a scanner warning instead of looking like ordinary no-pool rejections', () => {
+  assert.equal(typeof hunt.systemicQualificationFailure,'function');
+  assert.equal(hunt.systemicQualificationFailure(12,0),false);
+  assert.equal(hunt.systemicQualificationFailure(12,2),false);
+  assert.equal(hunt.systemicQualificationFailure(12,6),true);
+  assert.equal(hunt.systemicQualificationFailure(1,1),true);
+});
+
+test('strict state reads distinguish failed calls from genuinely empty pools', () => {
+  assert.equal(stateViewReadFailure(0,4,true),true);
+  assert.equal(stateViewReadFailure(0,0,true),false);
+  assert.equal(stateViewReadFailure(1,4,true),false);
+  assert.equal(stateViewReadFailure(0,4,false),false);
+});
+
+test('all failed StateView subcalls throw during strict pool verification', async () => {
+  const sv={interface:{encodeFunctionData:()=> '0x'}};
+  const keys=[{pk:{fee:30000,tickSpacing:60},poolId:'0x'+'a'.repeat(64)}];
+  const allFailed=async()=>[{success:false,returnData:'0x'},{success:false,returnData:'0x'}];
+  await assert.rejects(verify(sv,keys,'usd',true,allFailed),/StateView pool verification failed/);
+  assert.deepEqual(await verify(sv,keys,'usd',false,allFailed),[]);
+});
+
+test('strict verification rejects a failed liquidity subcall rather than marking the pool empty', async () => {
+  const sv={interface:{encodeFunctionData:()=> '0x',decodeFunctionResult:(name)=>name==='getSlot0'?[1n,0,0,30000]:[0n]}};
+  const keys=[{pk:{fee:30000,tickSpacing:60},poolId:'0x'+'b'.repeat(64)}];
+  const failedLiquidity=async()=>[{success:true,returnData:'0x'},{success:false,returnData:'0x'}];
+  await assert.rejects(verify(sv,keys,'usd',true,failedLiquidity),/StateView pool verification failed/);
+  assert.equal((await verify(sv,keys,'usd',false,failedLiquidity))[0].liquidity,0n);
+});
+
+test('scanner warning delivery rejects missing owner, network failure and Telegram refusal', () => {
+  assert.equal(telegramDeliveryFailure(false,{ok:true}), 'Telegram owner chat is not configured');
+  assert.equal(telegramDeliveryFailure(true,null), 'Telegram warning delivery failed');
+  assert.equal(telegramDeliveryFailure(true,{ok:false}), 'Telegram warning delivery failed');
+  assert.equal(telegramDeliveryFailure(true,{ok:true}), null);
+});
+
+test('hunt telemetry distinguishes ranked, eligible, sampled and qualified pools', () => {
+  assert.equal(typeof hunt.formatHuntFunnel, 'function');
+  assert.equal(hunt.formatHuntFunnel({ trending: 100, ranked: 40, eligible: 27, sampled: 20, dexViable: 5, qualified: 3, unheld: 2 }),
+    'hunt funnel: 100 trending → 40 ranked → 27 eligible → 20 sampled → 5 DEX-viable → 3 qualified → 2 unheld');
+});
 
 test('hunt uses its own exact-pool floors without weakening watch', () => {
   const watch = { minVol5m: 100_000, minVol1h: 1_000_000 };

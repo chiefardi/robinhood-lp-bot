@@ -6,6 +6,12 @@
 import { cfg } from "../config.js";
 import { discoverV4Pools, discoverV4UsdgPools, type V4Pool } from "./v4/discover.js";
 import { dexPairs, type DexPair } from "./dexscreener.js";
+import { poolActivityFailure } from "../radar/entry-guard.js";
+
+export interface AutoPoolActivity {minVol5m:number;minVol1h:number;now:number}
+export function discoveryTargetsForQuote(quoteFilter?:"eth"|"usd"):{eth:boolean;usd:boolean} {
+  return {eth:quoteFilter!=='usd',usd:quoteFilter!=='eth'};
+}
 
 export interface QualifiedPool {
   v4: V4Pool;
@@ -31,15 +37,18 @@ export interface QualifiedPool {
  * Ranks the survivors by absolute 24h fees (the real earning signal), not raw volume.
  */
 export function evaluateCandidatePools(
-  pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan,
+  pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan, quoteFilter?: "eth" | "usd", autoActivity?: AutoPoolActivity,
 ): { pool: QualifiedPool | null; rejected: Record<string, number> } {
   let best: QualifiedPool | null = null;
   const rejected: Record<string, number> = {};
   const reject = (reason: string): void => { rejected[reason] = (rejected[reason] ?? 0) + 1; };
   if (!pools.length) reject('no-v4-pools-returned');
   for (const p of pools) {
+    if (quoteFilter && p.quote !== quoteFilter) { reject('quote-outside-target'); continue; }
+    if (autoActivity && p.poolKey.hooks.toLowerCase() !== '0x0000000000000000000000000000000000000000') { reject('hooked-pool'); continue; }
     if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) { reject('fee-outside-band'); continue; }
     const d = dex.get(p.poolId.toLowerCase());
+    if (autoActivity && poolActivityFailure(d ?? {}, autoActivity, autoActivity.now)) { reject('recent-activity-below-minimum'); continue; }
     const volUsd = d?.vol24h ?? 0;
     if (volUsd < s.minVolUsd) { reject(d ? '24h-volume-below-minimum' : 'dex-pair-data-missing'); continue; }
     const liqUsd = d?.liqUsd ?? 0;
@@ -71,13 +80,14 @@ export function formatCandidateRejection(rejected: Record<string, number>): stri
   return parts.length ? parts.join(', ') : 'unclassified-pool-rejection';
 }
 
-export async function qualifyCandidate(token: string, onRejected?: (reasons: Record<string, number>) => void): Promise<QualifiedPool | null> {
+export async function qualifyCandidate(token: string, onRejected?: (reasons: Record<string, number>) => void, quoteFilter?: "eth" | "usd", autoActivity?: AutoPoolActivity): Promise<QualifiedPool | null> {
+  const target=discoveryTargetsForQuote(quoteFilter);
   const [eth, usd, dex] = await Promise.all([
-    discoverV4Pools(token).catch(() => [] as V4Pool[]),
-    discoverV4UsdgPools(token).catch(() => [] as V4Pool[]),
-    dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
+    target.eth?discoverV4Pools(token).catch(() => [] as V4Pool[]):Promise.resolve([] as V4Pool[]),
+    target.usd?(autoActivity?discoverV4UsdgPools(token,true):discoverV4UsdgPools(token).catch(() => [] as V4Pool[])):Promise.resolve([] as V4Pool[]),
+    autoActivity?dexPairs(token, Date.now(),{strict:true}):dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
   ]);
-  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan);
+  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan, quoteFilter, autoActivity);
   if (!result.pool) onRejected?.(result.rejected);
   return result.pool;
 }

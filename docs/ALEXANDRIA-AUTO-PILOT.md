@@ -24,6 +24,9 @@ full paper-trading engine. Tests use offline transaction/RPC boundaries.
   per rolling hour, and $90 gross deployment reservations. Replacements count.
   Actual entry costs count toward remaining capacity: three exact $30 trades may not
   fit once gas is included. Reserve room for costs (e.g. roughly $29 per trade).
+- Scanning and cash-basis exit management run around the clock while the service and
+  auto mode are on. The three-attempt/$90 session does **not** recycle closed slots;
+  it is a bounded 24/7 pilot, not an unlimited trading program.
 - The -$15 session loss circuit uses settled cash plus fresh liquidation estimates.
   It pauses entries and latches closes, but cannot guarantee a maximum realized loss.
 - Review after two hours; this is an operator checkpoint, not an automatic timer.
@@ -96,6 +99,12 @@ volume ranking on each pass, then reads each token's pools from DexScreener.
 Unavailable discovery or a failed pool lookup is logged as a scan error. The
 100-token ranking and two-minute scan cadence can miss short-lived surges; neither
 is a market-wide guarantee.
+The autonomous hunt separately starts from GMGN's five-minute volume leaders,
+then ranks **exact v4 pool** activity before costly on-chain qualification. Its
+traffic score is rules-only and does not treat token utility labels or token-wide
+volume as evidence that the chosen pool is busy. The chosen pool must be USDG;
+an ETH pool with higher historic fees does not displace an eligible USDG pool.
+The full fresh GMGN holder/security and exact-pool checks still run at entry.
 GMGN requests are serialized and paced, with a five-minute cooldown on rate-limit
 errors. Queued/stale or unavailable data blocks entry, not a safety bypass.
 

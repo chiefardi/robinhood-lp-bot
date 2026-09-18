@@ -23,6 +23,7 @@ export interface Candidate {
   vol1h?: number;
   liq?: number;
   fdv?: number;
+  expectedPoolId?: string; // exact pool chosen by hunt; auto preflight must not switch pools
 }
 
 export interface Verdict {

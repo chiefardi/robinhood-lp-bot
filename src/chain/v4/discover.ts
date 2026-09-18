@@ -63,7 +63,7 @@ const KEY_TTL_MS = 30 * 60_000; // re-scan getLogs for NEW pools every 30 min
  *   [INITIALIZE_TOPIC, null, tokenTopic]        → token = currency0
  * Falls back to chunked windows if an RPC caps the block range/result set for a huge history.
  */
-async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.Log[]> {
+async function rpcInitLogs(topics: (string | null)[], strict = false): Promise<readonly ethers.Log[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
   // dedicated logs RPC first, then the main provider (covers a down/throttled logs key)
@@ -83,11 +83,14 @@ async function rpcInitLogs(topics: (string | null)[]): Promise<readonly ethers.L
       const out: ethers.Log[] = [];
       for (let hi = latest; hi >= 0; hi -= SPAN) {
         const lo = Math.max(0, hi - SPAN + 1);
-        const part = await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
+        const part = strict
+          ? await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi })
+          : await provider.getLogs({ address: pm, topics, fromBlock: lo, toBlock: hi }).catch(() => [] as ethers.Log[]);
         out.push(...part);
       }
       return out;
-    } catch {
+    } catch (e) {
+      if (strict) throw e;
       return [];
     }
   }
@@ -102,12 +105,17 @@ const MC3_ABI = ["function aggregate3((address target,bool allowFailure,bytes ca
  * 40-120 micro-pools used to fire 80-240 individual reads that stalled under RPC contention (the "scan
  * pool lama / RPC lambat" the operator hit). Falls back to per-pool reads if a Multicall3 batch reverts.
  */
-async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: string }>, quote: "eth" | "usd" = "eth"): Promise<V4Pool[]> {
+export function stateViewReadFailure(poolCount:number,failedReads:number,strict:boolean):boolean {
+  return strict && poolCount===0 && failedReads>0;
+}
+
+export async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: string }>, quote: "eth" | "usd" = "eth", strict=false, aggregate?: (calls:Array<{target:string;allowFailure:boolean;callData:string}>)=>Promise<Array<{success:boolean;returnData:string}>>): Promise<V4Pool[]> {
   if (!keys.length) return [];
   const svAddr = C.v4StateView!;
   const iface = sv.interface;
-  const mc = new ethers.Contract(MULTICALL3, MC3_ABI, provider);
+  const mc = aggregate ? null : new ethers.Contract(MULTICALL3, MC3_ABI, provider);
   const out: V4Pool[] = [];
+  let failedReads=0;
   const CHUNK = 40; // 40 pools = 80 sub-calls per multicall (safe eth_call size)
   for (let i = 0; i < keys.length; i += CHUNK) {
     const slice = keys.slice(i, i + CHUNK);
@@ -117,43 +125,50 @@ async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: st
     ]);
     let res: Array<{ success: boolean; returnData: string }>;
     try {
-      res = await mc.aggregate3!(calls);
+      res = aggregate ? await aggregate(calls) : await mc!.aggregate3!(calls);
     } catch {
-      out.push(...(await verifyIndividual(sv, slice, quote))); // batch reverted → per-pool
+      out.push(...(await verifyIndividual(sv, slice, quote, strict))); // batch reverted → per-pool
       continue;
     }
     for (let j = 0; j < slice.length; j++) {
       const { pk, poolId } = slice[j]!;
       const s0r = res[j * 2];
-      if (!s0r?.success) continue;
+      if (!s0r?.success) { failedReads++; continue; }
       try {
         const d = iface.decodeFunctionResult("getSlot0", s0r.returnData);
         const sqrtPriceX96 = BigInt(d[0]);
         if (!(sqrtPriceX96 > 0n)) continue;
         const lqr = res[j * 2 + 1];
+        if(strict && !lqr?.success) { failedReads++; continue; }
         const liquidity = lqr?.success ? BigInt(iface.decodeFunctionResult("getLiquidity", lqr.returnData)[0]) : 0n;
         out.push({ poolKey: pk, poolId, fee: pk.fee, tickSpacing: pk.tickSpacing, sqrtPriceX96, tick: Number(d[1]), liquidity, lpFee: Number(d[3]), quote });
       } catch {
+        failedReads++;
         /* skip a pool whose result won't decode */
       }
     }
   }
+  if(stateViewReadFailure(out.length,failedReads,strict))throw new Error('StateView pool verification failed');
   return out;
 }
 
 /** Per-pool fallback for verify() when a Multicall3 batch reverts. */
-async function verifyIndividual(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: string }>, quote: "eth" | "usd"): Promise<V4Pool[]> {
+async function verifyIndividual(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poolId: string }>, quote: "eth" | "usd", strict=false): Promise<V4Pool[]> {
+  let failedReads=0;
   const out = await mapLimit(keys, 10, async ({ pk, poolId }): Promise<V4Pool | null> => {
     try {
       const s0 = await sv.getSlot0!(poolId);
       if (!(s0.sqrtPriceX96 > 0n)) return null;
-      const liquidity: bigint = await sv.getLiquidity!(poolId).catch(() => 0n);
+      const liquidity: bigint = strict ? await sv.getLiquidity!(poolId) : await sv.getLiquidity!(poolId).catch(() => 0n);
       return { poolKey: pk, poolId, fee: pk.fee, tickSpacing: pk.tickSpacing, sqrtPriceX96: s0.sqrtPriceX96, tick: Number(s0.tick), liquidity, lpFee: Number(s0.lpFee), quote };
     } catch {
+      failedReads++;
       return null;
     }
   });
-  return out.filter((p): p is V4Pool => p !== null);
+  const pools=out.filter((p): p is V4Pool => p !== null);
+  if(stateViewReadFailure(pools.length,failedReads,strict))throw new Error('StateView individual pool verification failed');
+  return pools;
 }
 
 /** All live token/native-ETH v4 pools for a token (via Initialize events). */
@@ -226,7 +241,7 @@ export async function discoverV4Pools(token: string): Promise<V4Pool[]> {
 }
 
 /** All live token/USDG v4 pools (token can be currency0 OR currency1, USDG is the other side). */
-export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
+export async function discoverV4UsdgPools(token: string, strict = false): Promise<V4Pool[]> {
   const pm = C.v4PoolManager;
   if (!pm) return [];
   const sv = stateView();
@@ -237,7 +252,7 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
   // cache-first (see discoverV4Pools): re-verify cached keys via StateView, skip the costly getLogs
   const ck = usdKeyCache.get(tL);
   if (ck && Date.now() - ck.at < KEY_TTL_MS) {
-    const pools = await verify(sv, ck.keys, "usd");
+    const pools = await verify(sv, ck.keys, "usd", strict);
     if (pools.length) {
       v4UsdCache.set(tL, pools);
       return pools;
@@ -248,8 +263,8 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
   // token can be currency0 (topics[2]) OR currency1 (topics[3]); keep only the pools whose OTHER side
   // is USDG. Both queries via the RPC (Blockscout's rate limit made this return empty = false "no pool").
   const logSets = await Promise.all([
-    rpcInitLogs([INITIALIZE_TOPIC, null, tk]),
-    rpcInitLogs([INITIALIZE_TOPIC, null, null, tk]),
+    rpcInitLogs([INITIALIZE_TOPIC, null, tk], strict),
+    rpcInitLogs([INITIALIZE_TOPIC, null, null, tk], strict),
   ]);
   for (const items of logSets) {
     for (const lg of items) {
@@ -274,7 +289,7 @@ export async function discoverV4UsdgPools(token: string): Promise<V4Pool[]> {
   }
   const capped = keys.slice(-120);
   if (capped.length) usdKeyCache.set(tL, { keys: capped, at: Date.now() }); // cache keys for reuse
-  const pools = await verify(sv, capped, "usd");
+  const pools = await verify(sv, capped, "usd", strict);
   if (pools.length) {
     v4UsdCache.set(tL, pools);
     return pools;

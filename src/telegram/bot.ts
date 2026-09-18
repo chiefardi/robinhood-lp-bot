@@ -1,5 +1,5 @@
 /** Long-poll loop + routing. The auth guard lives here: non-owner updates are dropped. */
-import { call, send, isOwner, lockOwner } from "./tg.js";
+import { call, send, sendCheckedWarning, isOwner, lockOwner } from "./tg.js";
 import { resolveMenu } from "./menu.js";
 import { startWatch } from "./watchLoop.js";
 import { startFeed, stopFeed } from "./feedLoop.js";
@@ -174,6 +174,7 @@ export async function run(): Promise<void> {
   startWatch();
   void startFeed(); // no-op unless cfg.feed.enabled
   startScan({
+    onWarning: message => sendCheckedWarning(`⚠️ ${message.replace(/[<>&]/g,'')}`),
     onCandidate: (r, p, notify) => {
       if (notify) void notifyCandidate(r, p).catch(() => {}); // alert cooldown does not suppress entry checks
       return handleHuntCandidate(r, p); // await auto preflight before evaluating the next candidate

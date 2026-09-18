@@ -6,6 +6,16 @@ import * as gmgn from '../src/radar/gmgn.ts';
 const holderEvidence={status:'ok',observedAt:1000,rows:100,coverageRate:.9,unobservedRate:.1,custodyRate:.4,taggedRiskRate:.01,taggedRiskUpperRate:.11,largestWalletRate:.04,top10WalletRate:.4,largestSharedFunderRate:0};
 const safe = { isHoneypot: false, buyTax: 0, sellTax: 0, holderEvidence, observedAt: 1000 };
 
+test('entry telemetry exposes exact-pool and holder coverage numbers without holder addresses', () => {
+  assert.equal(typeof guard.formatPoolActivityTelemetry, 'function');
+  assert.equal(typeof guard.formatHolderTelemetry, 'function');
+  assert.equal(guard.formatPoolActivityTelemetry({ vol5m: 900, volH1: 7000, buys5m: 1, sells5m: 2 }, { minVol5m: 1000, minVol1h: 5000 }),
+    'pool m5=$900/$1000 h1=$7000/$5000 trades5m=1B/2S');
+  assert.equal(guard.formatHolderTelemetry({ ...holderEvidence, coverageRate: .68, unobservedRate: .32, taggedRiskUpperRate: .34 }),
+    'holders coverage=68% unseen=32% tagged-upper=34% rows=100');
+  assert.equal(guard.formatHolderTelemetry(undefined), 'holders coverage=unknown');
+});
+
 test('raw GMGN booleans preserve false versus unknown and launch allocation never becomes current holdings',()=>{
   assert.equal(typeof gmgn.normalizeGmgnToken,'function');
   for(const value of [false,0,'0','false','no',' FALSE '])assert.equal(gmgn.normalizeGmgnToken({}, {is_honeypot:value},1000).isHoneypot,false);
