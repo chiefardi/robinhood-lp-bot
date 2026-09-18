@@ -59,6 +59,14 @@ test('all failed StateView subcalls throw during strict pool verification', asyn
   assert.deepEqual(await verify(sv,keys,'usd',false,allFailed),[]);
 });
 
+test('strict verification rejects a failed liquidity subcall rather than marking the pool empty', async () => {
+  const sv={interface:{encodeFunctionData:()=> '0x',decodeFunctionResult:(name)=>name==='getSlot0'?[1n,0,0,30000]:[0n]}};
+  const keys=[{pk:{fee:30000,tickSpacing:60},poolId:'0x'+'b'.repeat(64)}];
+  const failedLiquidity=async()=>[{success:true,returnData:'0x'},{success:false,returnData:'0x'}];
+  await assert.rejects(verify(sv,keys,'usd',true,failedLiquidity),/StateView pool verification failed/);
+  assert.equal((await verify(sv,keys,'usd',false,failedLiquidity))[0].liquidity,0n);
+});
+
 test('scanner warning delivery rejects missing owner, network failure and Telegram refusal', () => {
   assert.equal(telegramDeliveryFailure(false,{ok:true}), 'Telegram owner chat is not configured');
   assert.equal(telegramDeliveryFailure(true,null), 'Telegram warning delivery failed');

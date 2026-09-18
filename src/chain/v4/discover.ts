@@ -139,6 +139,7 @@ export async function verify(sv: ethers.Contract, keys: Array<{ pk: PoolKey; poo
         const sqrtPriceX96 = BigInt(d[0]);
         if (!(sqrtPriceX96 > 0n)) continue;
         const lqr = res[j * 2 + 1];
+        if(strict && !lqr?.success) { failedReads++; continue; }
         const liquidity = lqr?.success ? BigInt(iface.decodeFunctionResult("getLiquidity", lqr.returnData)[0]) : 0n;
         out.push({ poolKey: pk, poolId, fee: pk.fee, tickSpacing: pk.tickSpacing, sqrtPriceX96, tick: Number(d[1]), liquidity, lpFee: Number(d[3]), quote });
       } catch {
@@ -158,7 +159,7 @@ async function verifyIndividual(sv: ethers.Contract, keys: Array<{ pk: PoolKey; 
     try {
       const s0 = await sv.getSlot0!(poolId);
       if (!(s0.sqrtPriceX96 > 0n)) return null;
-      const liquidity: bigint = await sv.getLiquidity!(poolId).catch(() => 0n);
+      const liquidity: bigint = strict ? await sv.getLiquidity!(poolId) : await sv.getLiquidity!(poolId).catch(() => 0n);
       return { poolKey: pk, poolId, fee: pk.fee, tickSpacing: pk.tickSpacing, sqrtPriceX96: s0.sqrtPriceX96, tick: Number(s0.tick), liquidity, lpFee: Number(s0.lpFee), quote };
     } catch {
       failedReads++;
