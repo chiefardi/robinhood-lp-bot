@@ -51,9 +51,30 @@ exit valuation, burn, sale back to ETH, and zero remaining inventory.
 A complete Anvil lifecycle passed after the refund correction. Fork gas/fee
 economics are approximate and must not be represented as realized live PnL.
 No mainnet mint is proven by a simulation; the resumed scanner still has to find
-a fresh candidate passing the unchanged safety gates.
+a fresh candidate passing the unchanged safety gates (see the live result below).
 
 Local verification: 175 tests passed; application and operations typechecks pass.
 No screening, volume, holder-risk, position-size, loss, or total-attempt limits
 were loosened. The already-approved pilot—not a new/recycled budget—is resumed
 only after the final live probe, verified reconciliation, and ledger readback.
+
+## Live result — 08:33 UTC / 15:33 WIB
+
+Runtime commit `0e17485` was deployed, the MONEY no-broadcast incident was reconciled,
+and the existing session resumed with its caps unchanged. URANUS passed current
+GMGN/holder and exact-pool checks (5m volume $2,673; 1h $24,420; 7 buys/9 sells).
+The $29 entry completed automatically at 08:33:01 UTC:
+
+- [URANUS/USDG v4 position #2947439](https://app.uniswap.org/positions/v4/robinhood/2947439), 3.9% fee, single-sided.
+- Recorded immutable cash basis: $29.127622 including entry costs.
+- NFT ownership/inventory verified directly on-chain; wallet residual USDG/WETH zero.
+- Automatic risk cycle wrote a fresh $27.297798 estimated liquidation mark at
+  08:33:47 UTC. This estimate includes the configured swap haircut and exit buffer;
+  it is not a realized sale or the Uniswap display value.
+- Service active, zero restarts, session not paused, loss latch false.
+- Original limits retained: one aborted attempt plus one open position, leaving
+  one further attempt; $29 sizing, 10% SL, +10% trailing activation / 5pp giveback.
+
+Protected environment/config/ledger backups remain on the host. The unrelated
+local `src/types.ts` change was not staged or deployed. Subsequent uncertain entry
+failures now generate a dedicated Telegram warning without echoing raw RPC URLs.
