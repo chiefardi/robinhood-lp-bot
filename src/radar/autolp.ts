@@ -78,6 +78,9 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (!Number.isFinite(sizeEth) || sizeEth <= 0 || before.eth < GAS_RESERVE || before.eth + before.weth - GAS_RESERVE < sizeEth) throw new Error('insufficient or invalid wallet balances');
         const {USDG} = await import('../chain/v4/discover.js');
         const funding = await preflightKyberFunding(USDG,ethers.parseEther(sizeEth.toFixed(18)));
+        // Do not start with a funding round trip already beyond the approved SL.
+        const fundingLossPct=(1-Number(funding.returnWei)/Number(ethers.parseEther(sizeEth.toFixed(18))))*100;
+        if(!Number.isFinite(fundingLossPct)||fundingLossPct>=a.slPct)throw new Error('Funding round trip exceeds pilot stop-loss budget');
         if (Date.now() - price.observedAt > 60_000 || Date.now() < price.observedAt) throw new Error('entry price stale');
         const finalSecurity = securityFailure(g,a.maxTaxPct,Date.now());
         if (finalSecurity) throw new Error(finalSecurity);

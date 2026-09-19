@@ -20,7 +20,7 @@ for(const expired of ['GMGN','activity','funding-config','funding-route'])test(`
     '../chain/candidate.js':{qualifyCandidate:async()=>({quote:'usd',liqUsd:2000,volPct:0,vol5m:600000,volH1:1200000,buys5m:10,sells5m:10,observedAt:1000,v4:{poolId:'pool',liquidity:1n}})},
     ethers:{ethers:{Contract,parseEther:()=>1n}},'../chain/client.js':{provider:{}},'../chain/v4/abis.js':{STATEVIEW_ABI:[]},
     '../chain/v4/discover.js':{USDG:'USDG'},
-    '../chain/kyber.js':{assertKyberConfigured:()=>{if(expired==='funding-config')throw new Error('Funding unavailable')},preflightKyberFunding:async()=>{if(expired==='funding-route')throw new Error('Funding unavailable');return {observedAt:now}}},
+    '../chain/kyber.js':{assertKyberConfigured:()=>{if(expired==='funding-config')throw new Error('Funding unavailable')},preflightKyberFunding:async()=>{if(expired==='funding-route')throw new Error('Funding unavailable');return {observedAt:now,returnWei:1n}}},
     '../chain/v4/mint.js':{openV4UsdgInRange:async(_p,_a,opts)=>{now=71000;if(expired==='activity'){security.observedAt=70000;security.holderEvidence.observedAt=70000;}opts.strict.assertActive();sends++;throw new Error('unexpected financial broadcast')}},
   };
   const code=ts.transpileModule(readFileSync(new URL('../src/radar/autolp.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;

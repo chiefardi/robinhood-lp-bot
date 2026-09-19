@@ -136,7 +136,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   if (!kyberEnabled() || amountIn <= 0n) return null;
   const w = wallet();
   const nativeIn = tokenIn.toLowerCase() === KYBER_NATIVE.toLowerCase();
-  const slippageBps = Math.round((cfg.lp.slippagePct || 5) * 100);
+  const slippageBps = Math.round(cfg.lp.slippagePct * 100);
 
   // route + build hit the KyberSwap aggregator over HTTP and TRANSIENTLY return "route not found"
   // (indexing lag / momentary thin routing) even for a pair that routes fine seconds later — that was
@@ -147,6 +147,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   for (let attempt = 0; attempt < 3; attempt++) {
     route = await kyberRoute(tokenIn, tokenOut, amountIn);
     if (route) {
+      validateRoute(route, tokenIn, tokenOut, amountIn);
       built = await kyberBuild(route.routeSummary, w.address, w.address, slippageBps);
       if (built) {
         if (attempt > 0) log.info(`kyber route ok after retry #${attempt}`);
@@ -158,16 +159,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   if (!route || !built) return null;
 
   // ── security gates ──
-  if (ethers.getAddress(built.routerAddress) !== ethers.getAddress(env.kyberRouter)) {
-    throw new Error(`kyber router mismatch: ${built.routerAddress} ≠ whitelist`);
-  }
-  const value = BigInt(built.transactionValue ?? "0");
-  if (value !== (nativeIn ? amountIn : 0n)) throw new Error(`kyber value sanity: got ${value}, want ${nativeIn ? amountIn : 0n}`);
-  const quotedOut = BigInt(route.routeSummary.amountOut);
-  const minOut = (quotedOut * BigInt(10_000 - slippageBps)) / 10_000n;
-  if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) < minOut) {
-    throw new Error(`kyber build deviates (in ${built.amountIn}, out ${built.amountOut} < ${minOut})`);
-  }
+  const value = validateBuild(route, built, tokenIn, amountIn, slippageBps);
 
   // ERC20 input → exact-amount approve to the router (native in carries value, no approve)
   if (!nativeIn) {
