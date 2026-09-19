@@ -11,15 +11,23 @@ import { dataPath } from '../util/files.js';
 const positive = z.number().finite().positive();
 const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION']);
 export type RiskReason = z.infer<typeof reasonSchema>;
+// Operator-only proof for a pristine wallet. This cannot clear an attempted broadcast.
+const noBroadcastSchema = z.object({
+  chainId:z.literal(4663),wallet:z.string().regex(/^0x[0-9a-f]{40}$/i),
+  blockNumber:z.number().int().positive(),blockHash:z.string().regex(/^0x[0-9a-f]{64}$/i),observedAt:positive,
+  latestNonce:z.literal(0),pendingNonce:z.literal(0),nativeWei:z.string().regex(/^\d+$/),expectedNativeWei:z.string().regex(/^\d+$/),
+  wethWei:z.literal('0'),usdgRaw:z.literal('0'),v3Count:z.literal(0),v4Count:z.literal(0),reason:z.string().min(10),
+}).strict().refine(e=>BigInt(e.nativeWei)===BigInt(e.expectedNativeWei)&&BigInt(e.nativeWei)>0n,'Initial funding balance changed');
 const entrySchema = z.object({
   id:z.string(),token:z.string(),sizeUsd:positive,sizeEth:positive,at:positive,
-  status:z.enum(['reserved','open','closing','closed','uncertain']),
+  status:z.enum(['reserved','open','closing','closed','uncertain','aborted']),
+  noBroadcastEvidence:noBroadcastSchema.optional(),
   tokenId:z.string().optional(),basisUsd:positive.optional(),
   peakPct:z.number().finite().optional(),armed:z.boolean().default(false),
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
   blockNumber:z.number().int().nonnegative().optional(),
   closeReason:reasonSchema.optional(),realizedNetUsd:z.number().finite().optional(),
-}).strict();
+}).strict().refine(e=>e.status!=='aborted'||(!!e.noBroadcastEvidence&&!e.tokenId&&!e.basisUsd&&!e.closeReason),'Invalid aborted attempt');
 const sessionSchema = z.object({
   id:z.string(),startedAt:positive,paused:z.boolean(),pauseReason:z.string(),lossTriggered:z.boolean(),
   entries:z.array(entrySchema),
@@ -98,6 +106,15 @@ export class RiskStore {
     const s=this.read(),e=s.session?.entries.find(x=>x.id===id);if(!e)throw new Error('Unknown reservation');
     e.status='uncertain';s.session!.paused=true;s.session!.pauseReason='Entry execution/basis uncertain; reconcile';this.save(s);
   }
+  reconcileNeverBroadcast(id:string,input:z.infer<typeof noBroadcastSchema>):void {
+    const proof=noBroadcastSchema.parse(input);
+    if(this.now()<proof.observedAt||this.now()-proof.observedAt>60_000)throw new Error('Reconciliation proof stale');
+    const s=this.read(),r=s.session,e=r?.entries.find(x=>x.id===id);
+    if(!r||!r.paused||!e||!['reserved','uncertain'].includes(e.status)||e.tokenId||e.basisUsd||e.closeReason)
+      throw new Error('Only an unresolved never-broadcast entry can be reconciled');
+    e.status='aborted';e.noBroadcastEvidence=proof;
+    r.pauseReason='Never-broadcast attempt reconciled; entries remain paused';this.save(s);
+  }
   openPositions():Array<Entry & {tokenId:string;basisUsd:number}> {
     return (this.read().session?.entries??[]).filter((e):e is Entry & {tokenId:string;basisUsd:number}=>e.status!=='closed'&&!!e.tokenId&&!!e.basisUsd);
   }
@@ -123,6 +140,7 @@ export class RiskStore {
     if(r.lossTriggered)return true;
     let pnl=0;
     for(const e of r.entries){
+      if(e.status==='aborted')continue; // zero cash movement; still counts toward all entry/gross caps
       if(!e.basisUsd||e.status==='uncertain'||e.status==='closing'||e.status==='reserved') {r.paused=true;r.pauseReason='Incomplete session valuation';this.save(s);return false;}
       const value=e.status==='closed'?e.realizedNetUsd:e.markUsd;
       if(value==null||(e.status!=='closed'&&(!e.markAt||this.now()-e.markAt>60_000))){r.paused=true;r.pauseReason='Missing fresh session valuation';this.save(s);return false;}

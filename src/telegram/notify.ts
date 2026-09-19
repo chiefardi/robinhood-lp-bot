@@ -11,6 +11,13 @@ import type { ScreenResult } from "../radar/screen.js";
 import type { QualifiedPool } from "../chain/candidate.js";
 import type { AutoCloseInfo, RebalanceInfo, CompoundInfo } from "../radar/automanage.js";
 
+/** One alert for a newly uncertain reservation, not for ordinary screening rejections. */
+export async function notifyAutoLpFailure(r:AutoLpResult):Promise<void> {
+  if(!r.uncertain)return;
+  // Avoid forwarding arbitrary RPC errors/URLs, which can contain credentials.
+  await send(`⚠️ <b>Auto entry paused: reconciliation required</b>\n${esc(r.symbol)} · <code>${esc(r.token)}</code>\nAn entry attempt failed after reservation. Funds may or may not have moved. No automatic retry will occur until the transaction record is reconciled. Check /auto status.`);
+}
+
 /** Render an LLM/GMGN radar verdict as message lines (empty if no verdict). */
 function radarLines(v: Verdict | null): string[] {
   if (!v) return [];

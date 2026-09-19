@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import * as guard from '../src/radar/entry-guard.ts';
 
-for(const expired of ['GMGN','activity'])test(`${expired} expiring during mint preflight independently blocks broadcast`,async()=>{
+for(const expired of ['GMGN','activity','funding-config','funding-route'])test(`${expired} failure independently blocks broadcast`,async()=>{
   let now=1000,sends=0,failed=0;
   class Clock extends Date {static now(){return now}}
   const cfg={autoLp:{enabled:true,entryPaused:false,sources:['hunt'],requireLlm:false,requireAction:'ape',minScore:75,maxOpen:3,maxTaxPct:5,minLiqUsd:1000,sizeUsd:30,mode:'inrange',slPct:10,tpPct:0,trailActivationPct:15,trailGivebackPct:5},scan:{minPoolLiqUsd:1000},watch:{minVol5m:500000,minVol1h:1000000}};
@@ -18,7 +18,9 @@ for(const expired of ['GMGN','activity'])test(`${expired} expiring during mint p
     './gmgn.js':{gmgnToken:async()=>security},'./auto-risk.js':{riskStore,validateExitSettings:()=>{}},
     './entry-guard.js':{...guard,strictInventory:async()=>{},freshEntryPrice:async()=>{now=50000;return{usd:2000,observedAt:50000}},strictCashSnapshot:async()=>({eth:1,weth:0,usdg:0,blockNumber:1})},
     '../chain/candidate.js':{qualifyCandidate:async()=>({quote:'usd',liqUsd:2000,volPct:0,vol5m:600000,volH1:1200000,buys5m:10,sells5m:10,observedAt:1000,v4:{poolId:'pool',liquidity:1n}})},
-    ethers:{ethers:{Contract}},'../chain/client.js':{provider:{}},'../chain/v4/abis.js':{STATEVIEW_ABI:[]},
+    ethers:{ethers:{Contract,parseEther:()=>1n}},'../chain/client.js':{provider:{}},'../chain/v4/abis.js':{STATEVIEW_ABI:[]},
+    '../chain/v4/discover.js':{USDG:'USDG'},
+    '../chain/kyber.js':{assertKyberConfigured:()=>{if(expired==='funding-config')throw new Error('Funding unavailable')},preflightKyberFunding:async()=>{if(expired==='funding-route')throw new Error('Funding unavailable');return {observedAt:now,returnWei:1n}}},
     '../chain/v4/mint.js':{openV4UsdgInRange:async(_p,_a,opts)=>{now=71000;if(expired==='activity'){security.observedAt=70000;security.holderEvidence.observedAt=70000;}opts.strict.assertActive();sends++;throw new Error('unexpected financial broadcast')}},
   };
   const code=ts.transpileModule(readFileSync(new URL('../src/radar/autolp.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
@@ -26,7 +28,9 @@ for(const expired of ['GMGN','activity'])test(`${expired} expiring during mint p
   const verdict={llm:{action:'ape',score:80,summary:'test fixture'},llmSource:'heuristic',gmgn:null};
   const result=await api.maybeAutoLp({token:'token',symbol:'TEST',source:'hunt'},verdict);
   assert.equal(sends,0);
-  assert.equal(failed,1);
+  assert.equal(failed,expired.startsWith('funding')?0:1);
+  assert.equal(session.entries.length,expired.startsWith('funding')?0:1,'funding failures must not consume a reservation');
   assert.equal(result.opened,false);
-  assert.match(result.reason,expired==='GMGN'?/GMGN observation stale/:/pool activity stale/);
+  assert.equal(result.uncertain,!expired.startsWith('funding'));
+  assert.match(result.reason,expired.startsWith('funding')?/Funding unavailable/:expired==='GMGN'?/GMGN observation stale/:/pool activity stale/);
 });
