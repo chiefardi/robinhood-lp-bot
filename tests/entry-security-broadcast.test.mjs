@@ -31,5 +31,6 @@ for(const expired of ['GMGN','activity','funding-config','funding-route'])test(`
   assert.equal(failed,expired.startsWith('funding')?0:1);
   assert.equal(session.entries.length,expired.startsWith('funding')?0:1,'funding failures must not consume a reservation');
   assert.equal(result.opened,false);
+  assert.equal(result.uncertain,!expired.startsWith('funding'));
   assert.match(result.reason,expired.startsWith('funding')?/Funding unavailable/:expired==='GMGN'?/GMGN observation stale/:/pool activity stale/);
 });

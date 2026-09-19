@@ -7,7 +7,7 @@ import { cfg } from "../config.js";
 import { scoreCandidate, type Candidate, type Verdict } from "../radar/radar.js";
 import { qualifyCandidate, formatCandidateRejection } from "../chain/candidate.js";
 import { maybeAutoLp } from "../radar/autolp.js";
-import { notifySpike, notifyNewToken, notifyAutoLp } from "./notify.js";
+import { notifySpike, notifyNewToken, notifyAutoLp, notifyAutoLpFailure } from "./notify.js";
 import { logger } from "../util/log.js";
 import type { SpikeHit } from "../types.js";
 import type { NewTokenAlert } from "../feed/monitor.js";
@@ -20,6 +20,7 @@ async function runAuto(candidate: Candidate, verdict: Verdict | null): Promise<v
   try {
     const r = await maybeAutoLp(candidate, verdict);
     if (r?.opened) await notifyAutoLp(r);
+    else if (r?.uncertain) await notifyAutoLpFailure(r);
   } catch (e) {
     log.error(`auto-lp err: ${(e as Error).message}`);
   }

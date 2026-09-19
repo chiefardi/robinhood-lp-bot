@@ -12,7 +12,7 @@ import { assertKyberConfigured, preflightKyberFunding } from '../chain/kyber.js'
 const log = logger('autolp');
 const GAS_RESERVE = 0.0004;
 type OpenLike = { tokenId:string|null; txHash:string; tickLower:number; tickUpper:number; depositEth?:string; poolId?:string; mode?:string; side?:string; entryMcap?:number; swapHash?:string };
-export interface AutoLpResult { opened:boolean; reason:string; token:string; symbol:string; sizeEth?:number; result?:OpenLike }
+export interface AutoLpResult { opened:boolean; reason:string; token:string; symbol:string; sizeEth?:number; result?:OpenLike; uncertain?:boolean }
 
 export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null): Promise<AutoLpResult | null> {
   if (!cfg.autoLp.enabled) return null;
@@ -20,9 +20,9 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     log.info(`skip ${candidate.symbol}: ${reason}`);
     return {opened:false,reason,token:candidate.token,symbol:candidate.symbol};
   };
+  let reservationId:string|undefined;
   try {
     let sizeEth = 0;
-    let reservationId:string|undefined;
     const result = await guardedEntry({
       acquire: acquireWallet,
       release: releaseWallet,
@@ -122,7 +122,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     });
     return {opened:true,reason:'opened',token:candidate.token,symbol:candidate.symbol,sizeEth,result:result.opened};
   } catch (e) {
-    return skip(`entry blocked/uncertain: ${(e as Error).message.slice(0,180)}`);
+    return {...skip(`entry blocked/uncertain: ${(e as Error).message.slice(0,180)}`),uncertain:!!reservationId};
   }
 }
 

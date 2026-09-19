@@ -188,7 +188,13 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   const receipt=await waitTx(tx, "kyber-swap");
   if(strict&&(receipt?.status!==1||!Number.isSafeInteger(receipt.blockNumber)||receipt.blockNumber<=0))throw new Error('strict Kyber receipt uncertain');
   const after = await outBal(strict?receipt!.blockNumber:undefined);
-  return { tx: tx.hash, amountOut: after > before ? after - before : 0n, blockNumber:receipt?.blockNumber };
+  // Native balance delta is NET of this swap's gas. A successful tiny USDG refund
+  // can receive ETH while the wallet balance falls; callers need gross tokens out.
+  // Cash PnL still uses the full before/after wallet debit, including this fee.
+  const nativeFee = nativeOut ? receipt?.fee : 0n;
+  if(strict&&nativeOut&&(typeof nativeFee!=='bigint'||nativeFee<0n))throw new Error('strict Kyber receipt fee unavailable');
+  const received = after + (nativeFee ?? 0n) - before;
+  return { tx: tx.hash, amountOut: received > 0n ? received : 0n, blockNumber:receipt?.blockNumber };
 }
 
 /** Human route breakdown: "60% uniswapv3 · 40% up-v3". */
