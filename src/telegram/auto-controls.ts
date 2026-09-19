@@ -1,6 +1,6 @@
 import { RiskStore, PILOT_LIMITS, validateExitSettings, type ExitSettings } from '../radar/auto-risk.js';
 interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number}
-interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean}
+interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean;checkFunding:()=>Promise<void>}
 function ready(a:AutoSettings):void {
   validateExitSettings(a);
   if(a.slPct<=0 || (a.tpPct<=0&&a.trailActivationPct<=0))throw new Error('Configure hard SL and either fixed TP or trailing TP first');
@@ -31,6 +31,9 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     }
     if(cmd==='resume'){
       ready(a);if(!a.enabled)throw new Error('Start exit monitoring with /auto on first');
+      await d.checkFunding();
+      if(d.walletBusy())throw new Error('Wallet operation started during funding check');
+      ready(a);if(!a.enabled)throw new Error('Monitoring stopped during funding check');
       d.store.resumeEntries();a.entryPaused=false;d.persist();
       await d.send('Entries RESUMED, subject to persistent session caps, mandatory GMGN checks and exact-pool verification. Real funds may be spent.');return;
     }

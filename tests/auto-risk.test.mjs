@@ -4,6 +4,28 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+test('verified never-broadcast attempt preserves audit and all attempt caps without poisoning valuation',async(t)=>{
+ const {RiskStore}=await import('../src/radar/auto-risk.ts');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'risk-abort-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ let now=1_800_000_000_000;const s=new RiskStore(path.join(dir,'risk.json'),()=>now);
+ s.startSession();s.resumeEntries();const sessionId=s.snapshot().id;
+ const id=s.reserveEntry({token:'a',sizeUsd:29,sizeEth:.011});s.failEntry(id);
+ assert.equal(typeof s.reconcileNeverBroadcast,'function');
+ const evidence={chainId:4663,wallet:'0x'+'1'.repeat(40),blockNumber:123,blockHash:'0x'+'a'.repeat(64),observedAt:now,latestNonce:0,pendingNonce:0,nativeWei:'41000000000000000',expectedNativeWei:'41000000000000000',wethWei:'0',usdgRaw:'0',v3Count:0,v4Count:0,reason:'Missing router rejected before wallet access'};
+ for(const bad of [{latestNonce:1},{pendingNonce:1},{nativeWei:'40000000000000000'},{v4Count:1},{observedAt:now-61_000}])assert.throws(()=>s.reconcileNeverBroadcast(id,{...evidence,...bad}));
+ assert.equal(s.snapshot().entries[0].status,'uncertain');
+ s.reconcileNeverBroadcast(id,evidence);
+ assert.equal(s.snapshot().paused,true,'reconciliation does not implicitly rearm');
+ assert.equal(s.snapshot().entries[0].status,'aborted');
+ assert.deepEqual(s.snapshot().entries[0].noBroadcastEvidence,evidence);
+ assert.equal(s.snapshot().id,sessionId);
+ assert.throws(()=>s.startSession(),/unresolved/,'aborted attempt cannot be used to reset the pilot');
+ assert.equal(s.sessionLossCheck(),false);s.resumeEntries();assert.equal(s.entryAllowed(),false,'failed attempt still counts against hourly cap');
+ for(let n=2;n<=3;n++){now+=3_600_001;const r=s.reserveEntry({token:String(n),sizeUsd:29,sizeEth:.011});s.commitEntry(r,{tokenId:String(n),basisUsd:29});}
+ assert.equal(s.entryAllowed(),false,'aborted attempt is not a free fourth attempt');
+ assert.equal(s.snapshot().entries.reduce((n,e)=>n+e.sizeUsd,0),87);
+});
+
 test('persistent cash-basis trailing and session guard contract', async (t) => {
   const source = path.resolve('src/radar/auto-risk.ts');
   assert.ok(fs.existsSync(source), 'cash-basis risk store must exist');

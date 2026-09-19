@@ -1209,7 +1209,14 @@ export async function onAuto(arg = ""): Promise<void> {
   const { riskStore } = await import("../radar/auto-risk.js");
   const { startManage, stopManage } = await import("../radar/automanage.js");
   const { walletBusy } = await import("../chain/txlock.js");
-  await riskAutoCommand(arg, cfg.autoLp, {store:riskStore,persist,start:startManage,stop:stopManage,send,walletBusy});
+  const checkFunding = async () => {
+    const {preflightKyberFunding} = await import('../chain/kyber.js');
+    const {freshEntryPrice} = await import('../radar/entry-guard.js');
+    const {USDG} = await import('../chain/v4/discover.js');
+    const price = await freshEntryPrice();
+    await preflightKyberFunding(USDG,ethers.parseEther((cfg.autoLp.sizeUsd/price.usd).toFixed(18)));
+  };
+  await riskAutoCommand(arg, cfg.autoLp, {store:riskStore,persist,start:startManage,stop:stopManage,send,walletBusy,checkFunding});
 }
 
 // ══════════ close ══════════

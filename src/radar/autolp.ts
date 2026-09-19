@@ -7,6 +7,7 @@ import { gmgnToken } from './gmgn.js';
 import { riskStore,validateExitSettings } from './auto-risk.js';
 import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, expectedPoolFailure, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
 import type { Candidate, Verdict } from './radar.js';
+import { assertKyberConfigured, preflightKyberFunding } from '../chain/kyber.js';
 
 const log = logger('autolp');
 const GAS_RESERVE = 0.0004;
@@ -30,6 +31,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         return cfg.autoLp.slPct>0 && (cfg.autoLp.tpPct>0||cfg.autoLp.trailActivationPct>0) && cfg.autoLp.enabled && !cfg.autoLp.entryPaused && riskStore.entryAllowed();
       },
       prepare: async () => {
+        assertKyberConfigured();
         const a = cfg.autoLp;
         if (!a.sources.includes(candidate.source)) throw new Error('source not allowed');
         if (inOorCooldown(candidate.token)) throw new Error('OOR cooldown');
@@ -74,10 +76,15 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (!Number.isFinite(a.sizeUsd) || a.sizeUsd <= 0 || a.sizeUsd > 30) throw new Error('pilot size must be at most $30');
         sizeEth = a.sizeUsd / price.usd;
         if (!Number.isFinite(sizeEth) || sizeEth <= 0 || before.eth < GAS_RESERVE || before.eth + before.weth - GAS_RESERVE < sizeEth) throw new Error('insufficient or invalid wallet balances');
+        const {USDG} = await import('../chain/v4/discover.js');
+        const funding = await preflightKyberFunding(USDG,ethers.parseEther(sizeEth.toFixed(18)));
         if (Date.now() - price.observedAt > 60_000 || Date.now() < price.observedAt) throw new Error('entry price stale');
         const finalSecurity = securityFailure(g,a.maxTaxPct,Date.now());
         if (finalSecurity) throw new Error(finalSecurity);
-        return {q,mint,price,before,g,sizeEth,sizeUsd:a.sizeUsd,mode:a.mode};
+        const finalActivity = poolActivityFailure(q,limits,Date.now());
+        if (finalActivity) throw new Error(finalActivity);
+        log.info(`funding preflight ${candidate.symbol}: ETH/USDG buy simulated; USDG/ETH return built`);
+        return {q,mint,price,before,g,funding,sizeEth,sizeUsd:a.sizeUsd,mode:a.mode};
       },
       reserve: p => reservationId=riskStore.reserveEntry({token:candidate.token,sizeUsd:p.sizeUsd,sizeEth:p.sizeEth}),
       execute: async p => {
@@ -91,6 +98,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
           validateExitSettings(cfg.autoLp);
           if(cfg.autoLp.slPct<=0 || (cfg.autoLp.tpPct<=0&&cfg.autoLp.trailActivationPct<=0))throw new Error('required exit protection unavailable');
           if (Date.now()<p.price.observedAt || Date.now()-p.price.observedAt>60_000) throw new Error('entry price expired before broadcast');
+          if (Date.now()<p.funding.observedAt || Date.now()-p.funding.observedAt>60_000) throw new Error('funding preflight expired before broadcast');
           const session=riskStore.snapshot();
           if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('entry paused during execution');
         }};

@@ -75,6 +75,58 @@ export interface KyberSwapResult {
   blockNumber?:number;
 }
 
+/** No signing: used before reserving a funded attempt and by the deployment probe. */
+export function assertKyberConfigured(): void {
+  if (!kyberEnabled() || !ethers.isAddress(env.kyberRouter) || env.kyberRouter === ethers.ZeroAddress)
+    throw new Error('Funding unavailable: configure the verified Kyber router before enabling entries');
+}
+
+function validateRoute(route: RouteData, tokenIn: string, tokenOut: string, amountIn: bigint): void {
+  const s = route.routeSummary;
+  if (ethers.getAddress(route.routerAddress) !== ethers.getAddress(env.kyberRouter) ||
+      ethers.getAddress(s.tokenIn) !== ethers.getAddress(tokenIn) || ethers.getAddress(s.tokenOut) !== ethers.getAddress(tokenOut) ||
+      BigInt(s.amountIn) !== amountIn || BigInt(s.amountOut) <= 0n || !Array.isArray(s.route) || !s.route.length)
+    throw new Error('Kyber route identity/amount mismatch');
+}
+
+function validateBuild(route: RouteData, built: any, tokenIn: string, amountIn: bigint, slippageBps: number): bigint {
+  if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 5000) throw new Error('Invalid Kyber slippage');
+  if (ethers.getAddress(built.routerAddress) !== ethers.getAddress(env.kyberRouter)) throw new Error('Kyber build router mismatch');
+  const value = BigInt(built.transactionValue ?? '0');
+  if (value !== (tokenIn.toLowerCase() === KYBER_NATIVE.toLowerCase() ? amountIn : 0n)) throw new Error('Kyber transaction value mismatch');
+  const minOut = BigInt(route.routeSummary.amountOut) * BigInt(10_000 - slippageBps) / 10_000n;
+  if (BigInt(built.amountIn) !== amountIn || BigInt(built.amountOut) <= 0n || BigInt(built.amountOut) < minOut ||
+      typeof built.data !== 'string' || !/^0x(?:[a-f0-9]{2})+$/i.test(built.data)) throw new Error('Kyber build amount/calldata mismatch');
+  return value;
+}
+
+/** Quotes/builds the return leg too. ERC20 sale is NOT simulated without its balance/approval. */
+export async function preflightKyberFunding(tokenOut: string, amountIn: bigint): Promise<{amountOut:bigint;returnWei:bigint;observedAt:number}> {
+  assertKyberConfigured();
+  if (amountIn <= 0n) throw new Error('Invalid funding amount');
+  const observedAt = Date.now();
+  const [network, code] = await Promise.all([provider.getNetwork(), provider.getCode(env.kyberRouter)]);
+  if (network.chainId !== BigInt(cfg.chainId) || !code || code === '0x') throw new Error('Funding router chain/code unavailable');
+  const owner = wallet().address;
+  const slippageBps = Math.round(cfg.lp.slippagePct * 100);
+  const buy = await kyberRoute(KYBER_NATIVE, tokenOut, amountIn);
+  if (!buy) throw new Error('Funding buy route unavailable');
+  validateRoute(buy, KYBER_NATIVE, tokenOut, amountIn);
+  const built = await kyberBuild(buy.routeSummary, owner, owner, slippageBps);
+  if (!built) throw new Error('Funding buy build unavailable');
+  const value = validateBuild(buy, built, KYBER_NATIVE, amountIn, slippageBps);
+  const amountOut = BigInt(built.amountOut);
+  const sell = await kyberRoute(tokenOut, KYBER_NATIVE, amountOut);
+  if (!sell) throw new Error('Funding return route unavailable');
+  validateRoute(sell, tokenOut, KYBER_NATIVE, amountOut);
+  const sellBuilt = await kyberBuild(sell.routeSummary, owner, owner, slippageBps);
+  if (!sellBuilt) throw new Error('Funding return build unavailable');
+  validateBuild(sell, sellBuilt, tokenOut, amountOut, slippageBps);
+  await provider.call({to:env.kyberRouter,from:owner,data:built.data,value});
+  if (Date.now() < observedAt || Date.now() - observedAt > 60_000) throw new Error('Funding preflight expired');
+  return {amountOut,returnWei:BigInt(sellBuilt.amountOut),observedAt};
+}
+
 /**
  * Best-route swap. tokenIn = KYBER_NATIVE for ETH. Returns null if the aggregator can't route
  * (caller can fall back). Throws only on a SECURITY gate failure (never silently unsafe).
