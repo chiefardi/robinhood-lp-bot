@@ -38,7 +38,7 @@ test('outstanding cost basis caps exposure but unrealized profits do not force e
  assert.equal(s.entryAllowed(),true,'unrealized mark does not consume cost-basis exposure');
 });
 
-test('a token cannot occupy two slots, but can return after a confirmed exit and hourly cooldown',t=>{
+test('a token cannot occupy two slots, but can return after a confirmed exit',t=>{
  const f=fixture(t),{s}=f;f.add('same','1');f.advance(3_600_001);
  assert.throws(()=>f.add('SAME','2'),/Duplicate/);
  s.evaluatePosition('1',f.quote(25),exits);s.beginClose('1');s.finishClose('1',27);
@@ -102,4 +102,26 @@ test('serial closes re-quote after an earlier settlement ages the next position 
  await runRiskCycle(s,exits,{quote:async()=>{quotes++;return f.quote(28)},acquire:()=>true,release:()=>{},
   settle:async id=>{const p=s.snapshot().entries.find(e=>e.tokenId===id);ages.push(f.now()-p.markAt);f.advance(61_000);return 28},notify:()=>{},warn:()=>{}});
  assert.deepEqual(ages,[0,0]);assert.equal(quotes,4);assert.equal(s.openPositions().length,0);
+});
+
+test('eligible distinct pools can fill three slots back-to-back, but unfinished entries and a fourth stay blocked',t=>{
+ const f=fixture(t),{s}=f;
+ const first=s.reserveEntry({token:'a',sizeUsd:29,sizeEth:.01});
+ assert.equal(s.entryAllowed(29),false,'first workflow is still reserved');
+ s.commitEntry(first,{tokenId:'1',basisUsd:29.15});
+ assert.equal(s.entryAllowed(29),true,'no hourly delay after confirmed mint and accounting');
+ f.add('b','2',29.15);assert.equal(s.entryAllowed(29),true);
+ f.add('c','3',29.15);assert.equal(s.entryAllowed(29),false);
+ assert.match(s.entryBlockReason(29),/slots/);
+ assert.throws(()=>f.add('four','4'));
+ assert.equal(s.snapshot().entries.length,3);assert.equal(new Set(s.snapshot().entries.map(e=>e.at)).size,1);
+});
+
+test('confirmed close frees capacity immediately in the same hour without waiving duplicate or dollar caps',t=>{
+ const f=fixture(t),{s}=f;f.add('a','1');f.add('b','2');f.add('c','3');
+ s.evaluatePosition('2',f.quote(29),exits);s.evaluatePosition('3',f.quote(29),exits);
+ s.evaluatePosition('1',f.quote(25),exits);s.beginClose('1');assert.equal(s.entryAllowed(29),false);
+ s.finishClose('1',27);assert.equal(s.entryAllowed(29),true);
+ assert.throws(()=>f.add('b','4'),/Duplicate/);
+ f.add('d','4');assert.equal(s.openPositions().length,3);assert.equal(s.snapshot().entries.length,4);
 });

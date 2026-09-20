@@ -101,7 +101,7 @@ const AutoLpSchema = z.object({
   minLiqUsd: z.number().default(20000), // hard liquidity floor
   maxTaxPct: z.number().default(5), // hard tax ceiling (GMGN)
   maxOpen: z.number().int().default(3), // max concurrent LP positions total
-  maxPerHour: z.number().int().default(2), // rate limit
+  maxPerHour: z.number().int().nonnegative().default(0), // deprecated compatibility field; strict pilot has no hourly entry gate
   dailyCapEth: z.number().default(0.01), // max ETH auto-deployed per 24h
   sources: z.array(z.enum(["feed-new", "watch-spike", "hunt"])).default(["watch-spike", "hunt"]),
   // ── auto-CLOSE (manage loop, opt-in per trigger; 0/false = off) ──

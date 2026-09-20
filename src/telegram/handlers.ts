@@ -1774,7 +1774,6 @@ const AUTOLP_NUM_MAP: Record<string, keyof typeof cfg.autoLp> = {
   alpsize: "sizeEth",
   alpscore: "minScore",
   alpmaxopen: "maxOpen",
-  alpperhour: "maxPerHour",
   alpdaily: "dailyCapEth",
   alpminliq: "minLiqUsd",
   alpmaxtax: "maxTaxPct",
@@ -1800,7 +1799,7 @@ const SCAN_NUM_MAP: Record<string, keyof typeof cfg.scan> = {
   huntcooldown: "cooldownMin", // menit sebelum token yg udah di-alert boleh muncul lagi (rotasi cepet = kecil)
 };
 const SET_HELP =
-  "LP: width, deposit, slippage, gastarget\nWatch: vol5m, vol1h, rise, liq, tax, cooldown, interval\nFeed: minseed, activity, feedcooldown · toggle: newtoken/posmon/autoclose (0/1)\nRadar: radar/gmgn (0/1)\nHunt: huntvol, huntfees, huntyield, huntscore, huntmcapmin, huntmcapmax, huntpoolliq, huntmaxratio, huntspike, huntcooldown\nAuto-LP: alpsize, alpscore, alpmaxopen, alpperhour, alpdaily, alpminliq, alpmaxtax, alpgrace, alpoorcount, alpoorhours, alpcompoundmin, alpvolfade, alpvfadeage, alpminfeeh, alpfeegrace · alpmode single|inrange · alpclose 0/1 · alprebalance close|rebalance · alpcompound 0/1";
+  "LP: width, deposit, slippage, gastarget\nWatch: vol5m, vol1h, rise, liq, tax, cooldown, interval\nFeed: minseed, activity, feedcooldown · toggle: newtoken/posmon/autoclose (0/1)\nRadar: radar/gmgn (0/1)\nHunt: huntvol, huntfees, huntyield, huntscore, huntmcapmin, huntmcapmax, huntpoolliq, huntmaxratio, huntspike, huntcooldown\nAuto-LP: alpsize, alpscore, alpmaxopen, alpdaily, alpminliq, alpmaxtax, alpgrace, alpoorcount, alpoorhours, alpcompoundmin, alpvolfade, alpvfadeage, alpminfeeh, alpfeegrace · alpmode single|inrange · alpclose 0/1 · alprebalance close|rebalance · alpcompound 0/1";
 
 export async function onSet(text: string): Promise<void> {
   const [, k, v] = text.split(/\s+/);

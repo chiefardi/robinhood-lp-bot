@@ -37,7 +37,7 @@ type State=z.infer<typeof stateSchema>;
 type Entry=z.infer<typeof entrySchema>;
 export interface ExitSettings {tpPct:number;slPct:number;trailActivationPct:number;trailGivebackPct:number;timedTpMin?:number;timedTpPct?:number;maxHoldMin?:number}
 export interface ExitSnapshot {netUsd:number;observedAt:number;blockNumber:number}
-export const PILOT_LIMITS = Object.freeze({maxOpen:3,maxPerHour:1,outstandingUsd:90,lossUsd:15});
+export const PILOT_LIMITS = Object.freeze({maxOpen:3,outstandingUsd:90,lossUsd:15});
 const occupiesSlot = (e:Entry) => e.status !== 'closed' && e.status !== 'aborted';
 const outstandingBasis = (entries:Entry[]) => entries.filter(occupiesSlot).reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
 export function validateExitSettings(s:ExitSettings):void {
@@ -88,7 +88,6 @@ export class RiskStore {
       if(r.paused)return `Entries paused: ${r.pauseReason}`;
       if(r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)||e.closeReason&&e.status!=='closed'))return 'Pending or uncertain execution/exit requires settlement';
       if(r.entries.filter(occupiesSlot).length>=PILOT_LIMITS.maxOpen)return 'All 3 concurrent slots occupied';
-      if(r.entries.filter(e=>this.now()-e.at<3_600_000).length>=PILOT_LIMITS.maxPerHour)return 'One-entry-per-hour cooldown';
       const used=outstandingBasis(r.entries);
       if(!Number.isFinite(sizeUsd)||sizeUsd<0||used>=PILOT_LIMITS.outstandingUsd||used+sizeUsd>PILOT_LIMITS.outstandingUsd+1e-8)return 'Outstanding capital budget exceeds $90';
       return null;
@@ -152,7 +151,7 @@ export class RiskStore {
     if(r.lossTriggered)return true;
     let pnl=0;
     for(const e of r.entries){
-      if(e.status==='aborted')continue; // zero cash movement; retained for audit and hourly pacing
+      if(e.status==='aborted')continue; // zero cash movement; retained for audit
       if(!e.basisUsd||e.status==='uncertain'||e.status==='closing'||e.status==='reserved') {r.paused=true;r.pauseReason='Incomplete session valuation';this.save(s);return false;}
       const value=e.status==='closed'?e.realizedNetUsd:e.markUsd;
       if(value==null||(e.status!=='closed'&&(!e.markAt||this.now()-e.markAt>60_000))){r.paused=true;r.pauseReason='Missing fresh session valuation';this.save(s);return false;}

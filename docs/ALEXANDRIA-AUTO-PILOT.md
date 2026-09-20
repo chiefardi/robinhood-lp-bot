@@ -22,17 +22,20 @@ explicit operator approval. Tests use offline transaction/RPC boundaries.
   produce a much larger realized loss; these are bot triggers, not guaranteed stops.
 - `/auto session`: explicitly starts a new ledger only while auto is off and the
   previous session has no unresolved entries. Restarting the process does not reset it.
-- Hard pilot limits: at most three concurrent positions, one attempt per rolling
-  hour, and $90 outstanding cost basis. Reservations, open, closing and uncertain
+- Hard pilot limits: at most three concurrent positions and $90 outstanding cost
+  basis. Chief approved removing the hourly entry delay on September 20; entries
+  remain serialized through the wallet lock. Reservations, open, closing and uncertain
   entries occupy capacity. Only confirmed cash settlement or verified zero-spend
-  aborts free it. Closed/aborted records are never deleted, and attempts still count
-  toward hourly pacing. Distinct tokens are required across outstanding slots;
+  aborts free it. Closed/aborted records are never deleted. Distinct tokens are required across outstanding slots;
   a previously closed token may requalify. Entry sizing is $29 to leave gas headroom.
 - Unrealized gains do not consume cost-basis capacity or force an exposure-cap sale.
   There is no lifetime entry/turnover cap in this approved rotating mode.
 - Scanning and cash-basis exit management run around the clock while the service and
   auto mode are on. Settled slots are reusable, subject to screening, available
-  wallet funds, the hourly cap and the unchanged cumulative loss circuit.
+  wallet funds and the unchanged cumulative loss circuit. A second screened entry
+  can follow a confirmed first entry without waiting an hour; pending or uncertain
+  execution still blocks further entries. The legacy `maxPerHour` config field is
+  retained for config compatibility only and no longer controls this pilot.
 - The -$15 session loss circuit uses settled cash plus fresh liquidation estimates.
   It pauses entries and latches closes, but cannot guarantee a maximum realized loss.
 - Approved timed settings: `timedTpMin=120`, `timedTpPct=5`, `maxHoldMin=360`.

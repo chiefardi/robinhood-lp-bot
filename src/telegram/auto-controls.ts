@@ -17,7 +17,7 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     if(cmd==='session'){
       if(a.enabled||d.walletBusy())throw new Error('Stop auto and wait for wallet activity before starting a new session');
       d.store.startSession();a.entryPaused=true;d.persist();
-      await d.send('New pilot session created, entries PAUSED. Limits: 3 concurrent positions with reusable settled slots, 1 entry/hour, $90 outstanding cost basis, -$15 cumulative session loss circuit. Auto remains OFF.');return;
+      await d.send('New pilot session created, entries PAUSED. Limits: 3 concurrent positions with reusable settled slots, no hourly entry delay, one wallet workflow at a time, $90 outstanding cost basis, -$15 cumulative session loss circuit. Auto remains OFF.');return;
     }
     if(cmd==='pause'){
       d.store.pauseEntries();a.entryPaused=true;d.persist();
@@ -64,7 +64,8 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     const lines=[
       `Alexandria Auto — ${a.enabled?'monitoring ON':'OFF'}; entries ${a.entryPaused||s?.paused?'PAUSED':block?'BLOCKED':'enabled'}`,
       `Session: ${s?s.id:'not initialized'}`,
-      `Size: $${a.sizeUsd}; ${occupied.length}/${PILOT_LIMITS.maxOpen} occupied slots; ${Math.max(0,PILOT_LIMITS.maxOpen-occupied.length)} free; 1 entry/hour; outstanding basis $${used.toFixed(2)}/$90; cumulative loss circuit -$15.`,
+      `Size: $${a.sizeUsd}; ${occupied.length}/${PILOT_LIMITS.maxOpen} occupied slots; ${Math.max(0,PILOT_LIMITS.maxOpen-occupied.length)} free; no hourly entry delay; outstanding basis $${used.toFixed(2)}/$90; cumulative loss circuit -$15.`,
+      'One wallet workflow at a time; every entry needs fresh screening and confirmed accounting.',
       `History: ${entries.length} attempts retained; settled slots reusable. ${block?'Entry gate: '+block:'Entry gate: ready (screening still required)'}.`,
       `Hard SL: ${a.slPct>0?'-'+a.slPct+'%':'off'}; fixed TP: ${a.tpPct>0?'+'+a.tpPct+'%':'off'}; trailing: ${a.trailActivationPct>0?'+'+a.trailActivationPct+'% / '+a.trailGivebackPct+'pp':'off'}.`,
       `Timed TP: ${(a.timedTpMin??0)>0?'after '+a.timedTpMin+'m at >= +'+a.timedTpPct+'% net':'off'}; maximum hold: ${(a.maxHoldMin??0)>0?a.maxHoldMin+'m':'off'}.`,

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-test('verified never-broadcast attempt preserves audit and hourly pacing without occupying a live slot',async(t)=>{
+test('verified never-broadcast attempt preserves audit without occupying a live slot or imposing a delay',async(t)=>{
  const {RiskStore}=await import('../src/radar/auto-risk.ts');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'risk-abort-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  let now=1_800_000_000_000;const s=new RiskStore(path.join(dir,'risk.json'),()=>now);
@@ -20,7 +20,7 @@ test('verified never-broadcast attempt preserves audit and hourly pacing without
  assert.deepEqual(s.snapshot().entries[0].noBroadcastEvidence,evidence);
  assert.equal(s.snapshot().id,sessionId);
  assert.throws(()=>s.startSession(),/unresolved/,'aborted attempt cannot be used to reset the pilot');
- assert.equal(s.sessionLossCheck(),false);s.resumeEntries();assert.equal(s.entryAllowed(),false,'failed attempt still counts against hourly cap');
+ assert.equal(s.sessionLossCheck(),false);s.resumeEntries();assert.equal(s.entryAllowed(),true,'verified no-spend abort does not delay a new entry');
  for(let n=2;n<=3;n++){now+=3_600_001;const r=s.reserveEntry({token:String(n),sizeUsd:29,sizeEth:.011});s.commitEntry(r,{tokenId:String(n),basisUsd:29});}
  now+=3_600_001;
  assert.equal(s.entryAllowed(),true,'verified abort does not occupy a parallel slot');
@@ -44,7 +44,7 @@ test('persistent cash-basis trailing and session guard contract', async (t) => {
   store.resumeEntries();
   const id = store.reserveEntry({token:'token1',sizeUsd:30,sizeEth:.01});
   store.commitEntry(id,{tokenId:'1',basisUsd:30});
-  assert.equal(store.entryAllowed(), false, 'hourly cap');
+  assert.equal(store.entryAllowed(), true, 'confirmed entry leaves other slots eligible immediately');
   const settings = {tpPct:0,slPct:10,trailActivationPct:10,trailGivebackPct:5};
   const quote = (netUsd, blockNumber) => ({netUsd,blockNumber,observedAt:now});
   assert.equal(store.evaluatePosition('1',quote(32.7,1),settings).reason,null);
