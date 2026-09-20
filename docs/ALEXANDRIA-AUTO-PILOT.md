@@ -23,6 +23,14 @@ explicit operator approval. Tests use offline transaction/RPC boundaries.
 
 ## Controls and limits
 
+Winner-timer exemption deployed as runtime `62433df` on 2026-09-20 at 12:24:36 UTC
+(19:24:36 WIB). All 193 server tests and both TypeScript checks passed; independent
+review found no blockers. Backup: `/var/backups/robinhood-lp-winner-timers-20260920/`.
+Confirmed/pending wallet nonces matched at 38/38 before stopping. No config or
+ledger migration was needed. Session history and the pre-existing entry pause
+(`Fresh liquidation quote unavailable`) were preserved; zero positions were open
+at deployment. Service restarted active; updated policy/status delivered to Telegram.
+
 - New sessions start paused. `/auto on` starts exit monitoring but leaves entries
   paused; `/auto resume` permits entries only after the protection checks pass.
 - `/auto pause` pauses **new entries only**; exits continue while auto remains on.
