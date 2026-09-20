@@ -86,6 +86,9 @@ const AutoLpSchema = z.object({
   sizeUsd: z.number().finite().positive().max(30).default(30),
   trailActivationPct: z.number().finite().nonnegative().default(0),
   trailGivebackPct: z.number().finite().positive().default(5),
+  timedTpMin: z.number().finite().nonnegative().default(0),
+  timedTpPct: z.number().finite().nonnegative().default(0),
+  maxHoldMin: z.number().finite().nonnegative().default(0),
   exitCostBufferUsd: z.number().finite().nonnegative().default(0.25),
   sizeEth: z.number().positive().default(0.001), // ETH per auto position
   mode: z.enum(["single", "inrange"]).default("single"), // single = rug-safe

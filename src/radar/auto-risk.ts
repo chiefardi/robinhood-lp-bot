@@ -1,4 +1,4 @@
-/** Dedicated pilot ledger. Cash basis is immutable; recycled proceeds never reset limits.
+/** Dedicated pilot ledger. Cash basis and cumulative session history are immutable.
  * Missing/corrupt state, unknown execution, and stale marks fail closed for new entries.
  * All methods are synchronous, and callers serialize wallet actions with txlock.
  */
@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { dataPath } from '../util/files.js';
 
 const positive = z.number().finite().positive();
-const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION']);
+const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION','TIME_TP','MAX_HOLD']);
 export type RiskReason = z.infer<typeof reasonSchema>;
 // Operator-only proof for a pristine wallet. This cannot clear an attempted broadcast.
 const noBroadcastSchema = z.object({
@@ -35,12 +35,16 @@ const sessionSchema = z.object({
 const stateSchema = z.object({version:z.literal(1),session:sessionSchema.nullable(),history:z.array(sessionSchema)}).strict();
 type State=z.infer<typeof stateSchema>;
 type Entry=z.infer<typeof entrySchema>;
-export interface ExitSettings {tpPct:number;slPct:number;trailActivationPct:number;trailGivebackPct:number}
+export interface ExitSettings {tpPct:number;slPct:number;trailActivationPct:number;trailGivebackPct:number;timedTpMin?:number;timedTpPct?:number;maxHoldMin?:number}
 export interface ExitSnapshot {netUsd:number;observedAt:number;blockNumber:number}
-export const PILOT_LIMITS = Object.freeze({maxEntries:3,maxOpen:3,maxPerHour:1,grossUsd:90,lossUsd:15});
+export const PILOT_LIMITS = Object.freeze({maxOpen:3,maxPerHour:1,outstandingUsd:90,lossUsd:15});
+const occupiesSlot = (e:Entry) => e.status !== 'closed' && e.status !== 'aborted';
+const outstandingBasis = (entries:Entry[]) => entries.filter(occupiesSlot).reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
 export function validateExitSettings(s:ExitSettings):void {
-  if(![s.tpPct,s.slPct,s.trailActivationPct,s.trailGivebackPct].every(x=>Number.isFinite(x)&&x>=0)) throw new Error('Invalid exit settings');
+  if(![s.tpPct,s.slPct,s.trailActivationPct,s.trailGivebackPct,s.timedTpMin??0,s.timedTpPct??0,s.maxHoldMin??0].every(x=>Number.isFinite(x)&&x>=0)) throw new Error('Invalid exit settings');
   if(s.trailActivationPct>0 && (s.trailGivebackPct<=0 || s.tpPct>0)) throw new Error('Trailing requires positive giveback and fixed TP off');
+  if((s.timedTpMin??0)>0 && (s.timedTpPct??0)<=0)throw new Error('Timed TP requires a positive net profit threshold');
+  if((s.maxHoldMin??0)>0 && (s.timedTpMin??0)>s.maxHoldMin!)throw new Error('Timed TP must not start after maximum holding time');
 }
 
 export class RiskStore {
@@ -77,29 +81,33 @@ export class RiskStore {
     if(r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)))throw new Error('Pending or uncertain execution requires reconciliation');
     r.paused=false;r.pauseReason='';this.save(s);
   }
-  entryAllowed():boolean {
+  entryBlockReason(sizeUsd=0):string|null {
     try {
-      const r=this.read().session;if(!r||r.paused||r.lossTriggered)return false;
-      if(r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)||e.closeReason&&e.status!=='closed'))return false;
-      return r.entries.length<PILOT_LIMITS.maxEntries && r.entries.filter(e=>e.status==='open').length<PILOT_LIMITS.maxOpen &&
-        r.entries.filter(e=>this.now()-e.at<3_600_000).length<PILOT_LIMITS.maxPerHour &&
-        r.entries.reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0)<PILOT_LIMITS.grossUsd;
-    }catch{return false;}
+      const r=this.read().session;if(!r)return 'Session not initialized';
+      if(r.lossTriggered)return 'Cumulative session loss circuit latched';
+      if(r.paused)return `Entries paused: ${r.pauseReason}`;
+      if(r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)||e.closeReason&&e.status!=='closed'))return 'Pending or uncertain execution/exit requires settlement';
+      if(r.entries.filter(occupiesSlot).length>=PILOT_LIMITS.maxOpen)return 'All 3 concurrent slots occupied';
+      if(r.entries.filter(e=>this.now()-e.at<3_600_000).length>=PILOT_LIMITS.maxPerHour)return 'One-entry-per-hour cooldown';
+      const used=outstandingBasis(r.entries);
+      if(!Number.isFinite(sizeUsd)||sizeUsd<0||used>=PILOT_LIMITS.outstandingUsd||used+sizeUsd>PILOT_LIMITS.outstandingUsd+1e-8)return 'Outstanding capital budget exceeds $90';
+      return null;
+    }catch{return 'Risk state unreadable; reconciliation required';}
   }
+  entryAllowed(sizeUsd=0):boolean {return this.entryBlockReason(sizeUsd)===null;}
   reserveEntry(input:{token:string;sizeUsd:number;sizeEth:number}):string {
-    if(!this.entryAllowed())throw new Error('Session entry gate closed');
+    const blocked=this.entryBlockReason(input.sizeUsd);if(blocked)throw new Error(blocked);
     const s=this.read(),r=s.session!;
     positive.parse(input.sizeUsd);positive.parse(input.sizeEth);
-    if(!input.token||r.entries.some(e=>e.token.toLowerCase()===input.token.toLowerCase()))throw new Error('Duplicate/invalid token in session');
-    const used=r.entries.reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
-    if(used+input.sizeUsd>PILOT_LIMITS.grossUsd+1e-8)throw new Error('Gross session capital cap exceeded');
+    if(input.sizeUsd>30)throw new Error('Pilot entry size must be at most $30');
+    if(!input.token||r.entries.some(e=>occupiesSlot(e)&&e.token.toLowerCase()===input.token.toLowerCase()))throw new Error('Duplicate/invalid token in open slots');
     const id=randomUUID();r.entries.push({...input,id,at:this.now(),status:'reserved',armed:false});this.save(s);return id;
   }
   commitEntry(id:string,input:{tokenId:string;basisUsd:number}):void {
     const s=this.read(),r=s.session!;const e=r?.entries.find(x=>x.id===id);
     if(!e||e.status!=='reserved'||!input.tokenId||r.entries.some(x=>x.tokenId===input.tokenId))throw new Error('Invalid entry commit');
     positive.parse(input.basisUsd);Object.assign(e,input,{status:'open'});
-    if(r.entries.reduce((n,x)=>n+Math.max(x.sizeUsd,x.basisUsd??0),0)>PILOT_LIMITS.grossUsd){r.paused=true;r.pauseReason='Actual costs exhausted gross budget';}
+    if(outstandingBasis(r.entries)>PILOT_LIMITS.outstandingUsd){r.paused=true;r.pauseReason='Actual costs exhausted outstanding budget';}
     this.save(s);
   }
   failEntry(id:string):void {
@@ -126,12 +134,16 @@ export class RiskStore {
        !Number.isFinite(q.observedAt)||this.now()-q.observedAt>60_000||q.observedAt>this.now()+1000)throw new Error('Invalid or stale exit quote');
     if((e.blockNumber!=null&&q.blockNumber<e.blockNumber)||(e.markAt!=null&&q.observedAt<e.markAt))throw new Error('Regressing exit snapshot');
     const pnlPct=(q.netUsd/e.basisUsd-1)*100;
+    const ageMin=(this.now()-e.at)/60_000;
+    if(ageMin<0)throw new Error('Position entry timestamp is in the future');
     e.peakPct=Math.max(e.peakPct??-Infinity,pnlPct);e.markUsd=q.netUsd;e.markAt=q.observedAt;e.blockNumber=q.blockNumber;
     if(settings.trailActivationPct>0 && e.peakPct+1e-8>=settings.trailActivationPct)e.armed=true;
     if(!e.closeReason){
       if(settings.slPct>0&&pnlPct<=-settings.slPct+1e-8)e.closeReason='SL';
       else if(settings.trailActivationPct>0&&e.armed&&pnlPct<=e.peakPct-settings.trailGivebackPct+1e-8)e.closeReason='TRAIL';
       else if(settings.tpPct>0&&pnlPct+1e-8>=settings.tpPct)e.closeReason='TP';
+      else if((settings.maxHoldMin??0)>0&&ageMin>=settings.maxHoldMin!)e.closeReason='MAX_HOLD';
+      else if((settings.timedTpMin??0)>0&&ageMin>=settings.timedTpMin!&&pnlPct+1e-8>=settings.timedTpPct!)e.closeReason='TIME_TP';
     }
     this.save(s);return {pnlPct,peakPct:e.peakPct,reason:e.closeReason??null};
   }
@@ -140,7 +152,7 @@ export class RiskStore {
     if(r.lossTriggered)return true;
     let pnl=0;
     for(const e of r.entries){
-      if(e.status==='aborted')continue; // zero cash movement; still counts toward all entry/gross caps
+      if(e.status==='aborted')continue; // zero cash movement; retained for audit and hourly pacing
       if(!e.basisUsd||e.status==='uncertain'||e.status==='closing'||e.status==='reserved') {r.paused=true;r.pauseReason='Incomplete session valuation';this.save(s);return false;}
       const value=e.status==='closed'?e.realizedNetUsd:e.markUsd;
       if(value==null||(e.status!=='closed'&&(!e.markAt||this.now()-e.markAt>60_000))){r.paused=true;r.pauseReason='Missing fresh session valuation';this.save(s);return false;}

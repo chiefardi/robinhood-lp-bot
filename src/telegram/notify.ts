@@ -169,7 +169,7 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
 export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
   const emo = i.reason === "TP" ? "🎯💰" : i.reason === "SL" ? "🛑" : i.reason === "VFADE" ? "📉" : i.reason === "FVLOW" ? "🐌" : "🚪";
   const label =
-    i.reason === "TRAIL" ? "TRAILING PROFIT" : i.reason === "SESSION" ? "SESSION LOSS LIMIT" : i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
+    i.reason === "TIME_TP" ? "TIMED TAKE PROFIT" : i.reason === "MAX_HOLD" ? "MAXIMUM HOLD TIME" : i.reason === "TRAIL" ? "TRAILING PROFIT" : i.reason === "SESSION" ? "SESSION LOSS LIMIT" : i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
   const pnl =
     i.pnlPct != null
       ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}Ξ)` : ""}`

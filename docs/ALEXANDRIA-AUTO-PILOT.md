@@ -1,8 +1,10 @@
 # Alexandria Robinhood Auto — bounded pilot
 
-This branch adds cash-basis trailing TP to the existing Robinhood LP Bot fork.
-It does not activate trading, fund a wallet, deploy to a server, or implement a
-full paper-trading engine. Tests use offline transaction/RPC boundaries.
+The existing Robinhood LP Bot fork uses cash-basis protection. On 2026-09-20,
+Chief approved replacing the original three-total-attempt cap with three reusable
+concurrent slots, plus timed exits, including the existing ASKR position.
+Code defaults do not enable trading or timers; production configuration requires
+explicit operator approval. Tests use offline transaction/RPC boundaries.
 
 ## Controls and limits
 
@@ -20,16 +22,28 @@ full paper-trading engine. Tests use offline transaction/RPC boundaries.
   produce a much larger realized loss; these are bot triggers, not guaranteed stops.
 - `/auto session`: explicitly starts a new ledger only while auto is off and the
   previous session has no unresolved entries. Restarting the process does not reset it.
-- Hard pilot limits: at most three total attempts, three open positions, one attempt
-  per rolling hour, and $90 gross deployment reservations. Replacements count.
-  Actual entry costs count toward remaining capacity: three exact $30 trades may not
-  fit once gas is included. Reserve room for costs (e.g. roughly $29 per trade).
+- Hard pilot limits: at most three concurrent positions, one attempt per rolling
+  hour, and $90 outstanding cost basis. Reservations, open, closing and uncertain
+  entries occupy capacity. Only confirmed cash settlement or verified zero-spend
+  aborts free it. Closed/aborted records are never deleted, and attempts still count
+  toward hourly pacing. Distinct tokens are required across outstanding slots;
+  a previously closed token may requalify. Entry sizing is $29 to leave gas headroom.
+- Unrealized gains do not consume cost-basis capacity or force an exposure-cap sale.
+  There is no lifetime entry/turnover cap in this approved rotating mode.
 - Scanning and cash-basis exit management run around the clock while the service and
-  auto mode are on. The three-attempt/$90 session does **not** recycle closed slots;
-  it is a bounded 24/7 pilot, not an unlimited trading program.
+  auto mode are on. Settled slots are reusable, subject to screening, available
+  wallet funds, the hourly cap and the unchanged cumulative loss circuit.
 - The -$15 session loss circuit uses settled cash plus fresh liquidation estimates.
   It pauses entries and latches closes, but cannot guarantee a maximum realized loss.
-- Review after two hours; this is an operator checkpoint, not an automatic timer.
+- Approved timed settings: `timedTpMin=120`, `timedTpPct=5`, `maxHoldMin=360`.
+  After two hours, close at >= +5% fresh estimated net cash PnL. After six hours,
+  close regardless of PnL. Age uses the persisted original entry reservation time,
+  not process uptime. Existing positions receive the same deadlines. SL/trailing
+  have priority; maximum holding time is reported before timed profit if both are
+  first observed after expiry. A latched exit is never cleared by a rebound.
+- Fresh valuation is required even for a previously latched exit retry. Missing
+  quotes pause entries and warn; exit checks continue. Recovery does not silently
+  clear an entry pause. Timers and stops are not guaranteed fills.
 - Compounding, automatic re-ranging, legacy OOR and fee-velocity exits are disabled
   for this bounded auto mode. Manual trading remains available when auto is off,
   no wallet operation is running and no uncertain execution needs reconciliation.

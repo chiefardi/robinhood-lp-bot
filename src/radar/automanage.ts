@@ -11,7 +11,7 @@ import { runRiskCycle } from "./risk-manager.js";
 
 const log = logger("automanage");
 
-export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "TRAIL" | "SESSION";
+export type CloseReason = "TP" | "SL" | "OOR" | "VFADE" | "FVLOW" | "TRAIL" | "SESSION" | "TIME_TP" | "MAX_HOLD";
 
 export interface AutoCloseInfo {
   tokenId: string;
@@ -99,7 +99,8 @@ async function tick(): Promise<void> {
       settle:async(id,reason)=>{
         const price=await freshEntryPrice();
         const before=await strictCashSnapshot();
-        const result=await closeV4PositionStrict(id,reason,{beforeBurn:()=>{if(!cfg.autoLp.enabled)throw new Error('Auto stopped before burn');}});
+        const quoteObservedAt=riskStore.openPositions().find(p=>p.tokenId===id)?.markAt??0;
+        const result=await closeV4PositionStrict(id,reason,{quoteObservedAt,beforeBurn:()=>{if(!cfg.autoLp.enabled)throw new Error('Auto stopped before burn');}});
         const after=await strictCashSnapshot(result.confirmedBlockNumber);
         if(after.blockNumber<before.blockNumber)throw new Error('Regressing settlement snapshot');
         if(after.usdg!==before.usdg)throw new Error('Unsettled USDG balance changed; cash PnL unknown');

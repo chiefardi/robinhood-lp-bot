@@ -15,18 +15,22 @@ export async function runRiskCycle(store:RiskStore,settings:ExitSettings,d:Depen
   try {await runLockedCycle(store,settings,d);}finally{d.release();}
 }
 async function runLockedCycle(store:RiskStore,settings:ExitSettings,d:Dependencies):Promise<void> {
+  const fresh=new Set<string>();
   for(const p of store.openPositions()) {
     if(p.status!=='open')continue;
-    try {store.evaluatePosition(p.tokenId,await d.quote(p.tokenId),settings);}
+    try {store.evaluatePosition(p.tokenId,await d.quote(p.tokenId),settings);fresh.add(p.tokenId);}
     catch {store.pauseEntries('Fresh liquidation quote unavailable');d.warn(`Position #${p.tokenId}: quote unavailable; entries paused, no fabricated mark`);}
   }
   store.sessionLossCheck();
   for(const p of store.openPositions()) {
     if(store.executionBlocked())break;
     if(d.isEnabled&&!d.isEnabled())break;
-    if(p.status!=='open'||!p.closeReason)continue;
+    if(p.status!=='open'||!p.closeReason||!fresh.has(p.tokenId))continue;
     let began=false,settled=false;
     try {
+      // Earlier closes and later quote calls can age the initial cycle snapshot.
+      store.evaluatePosition(p.tokenId,await d.quote(p.tokenId),settings);
+      if(d.isEnabled&&!d.isEnabled())break;
       store.beginClose(p.tokenId);began=true;
       const netUsd=await d.settle(p.tokenId,p.closeReason);
       store.finishClose(p.tokenId,netUsd);
@@ -35,6 +39,7 @@ async function runLockedCycle(store:RiskStore,settings:ExitSettings,d:Dependenci
         estimatedPnlPct:p.markUsd==null?null:(p.markUsd/p.basisUsd-1)*100,
         realizedPnlUsd:netUsd-p.basisUsd,realizedPnlPct:(netUsd/p.basisUsd-1)*100});
     }catch(error:any) {
+      if(!began){store.pauseEntries('Fresh liquidation quote unavailable');d.warn(`Position #${p.tokenId}: fresh pre-close quote unavailable; no transaction sent`);continue;}
       const notBroadcast=error?.broadcastPossible===false;
       if(began&&!settled){if(notBroadcast)store.cancelUnbroadcastClose(p.tokenId);else store.failClose(p.tokenId);}
       d.warn(settled?`Position #${p.tokenId}: cash settlement recorded; notification failed`:notBroadcast?`Position #${p.tokenId}: close stopped before broadcast; entries paused`:`Position #${p.tokenId}: close requires reconciliation; automatic retry blocked`);

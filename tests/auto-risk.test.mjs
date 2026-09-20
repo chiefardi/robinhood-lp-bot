@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-test('verified never-broadcast attempt preserves audit and all attempt caps without poisoning valuation',async(t)=>{
+test('verified never-broadcast attempt preserves audit and hourly pacing without occupying a live slot',async(t)=>{
  const {RiskStore}=await import('../src/radar/auto-risk.ts');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'risk-abort-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
  let now=1_800_000_000_000;const s=new RiskStore(path.join(dir,'risk.json'),()=>now);
@@ -22,8 +22,11 @@ test('verified never-broadcast attempt preserves audit and all attempt caps with
  assert.throws(()=>s.startSession(),/unresolved/,'aborted attempt cannot be used to reset the pilot');
  assert.equal(s.sessionLossCheck(),false);s.resumeEntries();assert.equal(s.entryAllowed(),false,'failed attempt still counts against hourly cap');
  for(let n=2;n<=3;n++){now+=3_600_001;const r=s.reserveEntry({token:String(n),sizeUsd:29,sizeEth:.011});s.commitEntry(r,{tokenId:String(n),basisUsd:29});}
- assert.equal(s.entryAllowed(),false,'aborted attempt is not a free fourth attempt');
- assert.equal(s.snapshot().entries.reduce((n,e)=>n+e.sizeUsd,0),87);
+ now+=3_600_001;
+ assert.equal(s.entryAllowed(),true,'verified abort does not occupy a parallel slot');
+ s.commitEntry(s.reserveEntry({token:'four',sizeUsd:29,sizeEth:.011}),{tokenId:'4',basisUsd:29});
+ now+=3_600_001;assert.equal(s.entryAllowed(),false,'three open positions fill all slots');
+ assert.equal(s.snapshot().entries.reduce((n,e)=>n+e.sizeUsd,0),116,'historical audit is never discarded');
 });
 
 test('persistent cash-basis trailing and session guard contract', async (t) => {
@@ -62,7 +65,8 @@ test('persistent cash-basis trailing and session guard contract', async (t) => {
     afterCrash.commitEntry(r,{tokenId:String(n),basisUsd:30});
     if(n===2) now+=3_600_001;
   }
-  assert.equal(afterCrash.entryAllowed(),false,'closed capital does not reset total entry cap');
+  now+=3_600_001;
+  assert.equal(afterCrash.entryAllowed(),true,'settled capital frees a slot without resetting session history');
   assert.throws(()=>afterCrash.startSession(),/unresolved/);
 });
 

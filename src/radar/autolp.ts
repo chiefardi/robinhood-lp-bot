@@ -28,7 +28,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
       release: releaseWallet,
       allowed: () => {
         validateExitSettings(cfg.autoLp);
-        return cfg.autoLp.slPct>0 && (cfg.autoLp.tpPct>0||cfg.autoLp.trailActivationPct>0) && cfg.autoLp.enabled && !cfg.autoLp.entryPaused && riskStore.entryAllowed();
+        return cfg.autoLp.slPct>0 && (cfg.autoLp.tpPct>0||cfg.autoLp.trailActivationPct>0) && cfg.autoLp.enabled && !cfg.autoLp.entryPaused && riskStore.entryAllowed(cfg.autoLp.sizeUsd);
       },
       prepare: async () => {
         assertKyberConfigured();
@@ -122,7 +122,9 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     });
     return {opened:true,reason:'opened',token:candidate.token,symbol:candidate.symbol,sizeEth,result:result.opened};
   } catch (e) {
-    return {...skip(`entry blocked/uncertain: ${(e as Error).message.slice(0,180)}`),uncertain:!!reservationId};
+    const message=(e as Error).message;
+    const detail=message==='entries paused or session unavailable' ? (riskStore.entryBlockReason(cfg.autoLp.sizeUsd)??message) : message;
+    return {...skip(`entry blocked/uncertain: ${detail.slice(0,180)}`),uncertain:!!reservationId};
   }
 }
 
