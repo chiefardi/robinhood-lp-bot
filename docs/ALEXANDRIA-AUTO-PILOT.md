@@ -54,9 +54,14 @@ explicit operator approval. Tests use offline transaction/RPC boundaries.
 - The -$15 session loss circuit uses settled cash plus fresh liquidation estimates.
   It pauses entries and latches closes, but cannot guarantee a maximum realized loss.
 - Approved timed settings: `timedTpMin=120`, `timedTpPct=5`, `maxHoldMin=360`.
-  After two hours, close at >= +5% fresh estimated net cash PnL. After six hours,
-  close regardless of PnL. Age uses the persisted original entry reservation time,
-  not process uptime. Existing positions receive the same deadlines. SL/trailing
+  While trailing is not active and armed: after two hours, close at >= +5% fresh
+  estimated net cash PnL; after six hours, close regardless of PnL. Chief approved
+  exempting armed winners from both timers on September 20. Once a fresh observed
+  peak reaches +10%, active trailing manages the position with a 5pp giveback,
+  including beyond six hours and across restarts. SL and session-loss protection
+  still override. Disabling trailing restores timer eligibility; stored flags alone
+  do not exempt unprotected positions. Age uses the persisted original entry reservation time,
+  not process uptime. Existing positions receive the same policy. SL/trailing
   have priority; maximum holding time is reported before timed profit if both are
   first observed after expiry. A latched exit is never cleared by a rebound.
 - Fresh valuation is required even for a previously latched exit retry. Missing

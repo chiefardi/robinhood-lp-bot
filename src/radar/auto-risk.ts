@@ -137,12 +137,14 @@ export class RiskStore {
     if(ageMin<0)throw new Error('Position entry timestamp is in the future');
     e.peakPct=Math.max(e.peakPct??-Infinity,pnlPct);e.markUsd=q.netUsd;e.markAt=q.observedAt;e.blockNumber=q.blockNumber;
     if(settings.trailActivationPct>0 && e.peakPct+1e-8>=settings.trailActivationPct)e.armed=true;
+    // Timers recycle unarmed positions; active trailing protection manages winners.
+    const trailingActive=settings.trailActivationPct>0&&e.armed;
     if(!e.closeReason){
       if(settings.slPct>0&&pnlPct<=-settings.slPct+1e-8)e.closeReason='SL';
       else if(settings.trailActivationPct>0&&e.armed&&pnlPct<=e.peakPct-settings.trailGivebackPct+1e-8)e.closeReason='TRAIL';
       else if(settings.tpPct>0&&pnlPct+1e-8>=settings.tpPct)e.closeReason='TP';
-      else if((settings.maxHoldMin??0)>0&&ageMin>=settings.maxHoldMin!)e.closeReason='MAX_HOLD';
-      else if((settings.timedTpMin??0)>0&&ageMin>=settings.timedTpMin!&&pnlPct+1e-8>=settings.timedTpPct!)e.closeReason='TIME_TP';
+      else if(!trailingActive&&(settings.maxHoldMin??0)>0&&ageMin>=settings.maxHoldMin!)e.closeReason='MAX_HOLD';
+      else if(!trailingActive&&(settings.timedTpMin??0)>0&&ageMin>=settings.timedTpMin!&&pnlPct+1e-8>=settings.timedTpPct!)e.closeReason='TIME_TP';
     }
     this.save(s);return {pnlPct,peakPct:e.peakPct,reason:e.closeReason??null};
   }

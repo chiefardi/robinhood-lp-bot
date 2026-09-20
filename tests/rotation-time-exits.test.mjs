@@ -125,3 +125,46 @@ test('confirmed close frees capacity immediately in the same hour without waivin
  assert.throws(()=>f.add('b','4'),/Duplicate/);
  f.add('d','4');assert.equal(s.openPositions().length,3);assert.equal(s.snapshot().entries.length,4);
 });
+
+test('a winner first observed at either timer deadline arms trailing instead of taking a timed exit',t=>{
+ for(const minutes of [120,360]){
+  const f=fixture(t);f.add('a','1');f.advance(minutes*60_000);
+  assert.equal(f.s.evaluatePosition('1',f.quote(36.25),exits).reason,null,'+25% winner must keep running');
+  assert.equal(f.s.openPositions()[0].armed,true);
+ }
+});
+
+test('armed winner ignores both timers across restart and exits only on peak giveback',t=>{
+ const f=fixture(t);f.add('a','1');f.s.evaluatePosition('1',f.quote(31.9),exits);
+ f.advance(120*60_000);const restarted=new RiskStore(f.file,f.now);
+ assert.equal(restarted.evaluatePosition('1',f.quote(31.03),exits).reason,null,'+7% is below activation but above the +5% trailing floor');
+ f.advance(240*60_000);assert.equal(restarted.evaluatePosition('1',f.quote(36.25),exits).reason,null);
+ f.advance(60_000);assert.equal(restarted.evaluatePosition('1',f.quote(38.28),exits).reason,null,'+32% raises the floor to +27%');
+ f.advance(60_000);assert.equal(restarted.evaluatePosition('1',f.quote(36.859),exits).reason,null);
+ f.advance(60_000);assert.equal(restarted.evaluatePosition('1',f.quote(36.83),exits).reason,'TRAIL');
+});
+
+test('armed timer exemption never bypasses hard SL or cumulative session loss',t=>{
+ const f=fixture(t);f.add('a','1');f.s.evaluatePosition('1',f.quote(36.25),exits);f.advance(360*60_000);
+ assert.equal(f.s.evaluatePosition('1',f.quote(26.1),exits).reason,'SL');
+ const g=fixture(t);g.add('a','1');g.add('b','2');g.add('c','3');
+ g.s.evaluatePosition('1',g.quote(36.25),exits);g.advance(360*60_000);
+ assert.equal(g.s.evaluatePosition('1',g.quote(36.25),exits).reason,null);
+ g.s.evaluatePosition('2',g.quote(17),exits);g.s.evaluatePosition('3',g.quote(17),exits);
+ assert.equal(g.s.sessionLossCheck(),true);
+ assert.equal(g.s.openPositions().find(p=>p.tokenId==='1').closeReason,'SESSION');
+});
+
+test('disabling trailing restores timer eligibility despite a stored armed flag',t=>{
+ const f=fixture(t);f.add('a','1');f.s.evaluatePosition('1',f.quote(36.25),exits);f.advance(360*60_000);
+ assert.equal(f.s.evaluatePosition('1',f.quote(36.25),{...exits,trailActivationPct:0}).reason,'MAX_HOLD');
+});
+
+test('risk cycle retains an armed winner past expiry while settling an unarmed expired position',async t=>{
+ const f=fixture(t);f.add('a','1');f.add('b','2');f.s.evaluatePosition('1',f.quote(36.25),exits);f.advance(360*60_000);
+ const settled=[];
+ await runRiskCycle(f.s,exits,{quote:async id=>f.quote(id==='1'?36.25:29),acquire:()=>true,release:()=>{},
+  settle:async(id,reason)=>{settled.push({id,reason});return 29},notify:()=>{},warn:()=>{}});
+ assert.deepEqual(settled,[{id:'2',reason:'MAX_HOLD'}]);
+ assert.deepEqual(f.s.openPositions().map(p=>p.tokenId),['1']);
+});

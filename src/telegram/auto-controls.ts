@@ -69,14 +69,17 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
       `History: ${entries.length} attempts retained; settled slots reusable. ${block?'Entry gate: '+block:'Entry gate: ready (screening still required)'}.`,
       `Hard SL: ${a.slPct>0?'-'+a.slPct+'%':'off'}; fixed TP: ${a.tpPct>0?'+'+a.tpPct+'%':'off'}; trailing: ${a.trailActivationPct>0?'+'+a.trailActivationPct+'% / '+a.trailGivebackPct+'pp':'off'}.`,
       `Timed TP: ${(a.timedTpMin??0)>0?'after '+a.timedTpMin+'m at >= +'+a.timedTpPct+'% net':'off'}; maximum hold: ${(a.maxHoldMin??0)>0?a.maxHoldMin+'m':'off'}.`,
+      'Both timers apply only while trailing is not active and armed. Armed winners keep running; SL and session-loss protection remain active.',
       `Realized session cash PnL: $${realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
       ...(s?.pauseReason?[`Pause: ${s.pauseReason}`]:[]),
       ...[...occupied,...entries.filter(e=>!occupied.includes(e)).slice(-5)].map(e=>[
         `#${e.tokenId??'pending'} ${e.status}: basis ${e.basisUsd==null?'unknown':'$'+e.basisUsd.toFixed(2)}, peak ${e.peakPct==null?'unknown':e.peakPct.toFixed(2)+'%'}, ${e.closeReason??'no exit latched'}`,
         ...(e.status==='open'?[
           `Trailing ${e.armed&&a.trailActivationPct>0?'ARMED; exit at '+((e.peakPct??0)-a.trailGivebackPct).toFixed(2)+'% net':'not armed'}.`,
-          ...((a.timedTpMin??0)>0?[`Timed TP eligible from ${new Date(e.at+a.timedTpMin!*60_000).toISOString()} at >= +${a.timedTpPct}% net.`]:[]),
-          ...((a.maxHoldMin??0)>0?[`Maximum hold deadline ${new Date(e.at+a.maxHoldMin!*60_000).toISOString()}.`]:[]),
+          ...(e.armed&&a.trailActivationPct>0?['Timers bypassed: trailing manages this winner; any previously latched exit remains binding.']:[
+            ...((a.timedTpMin??0)>0?[`Timed TP eligible from ${new Date(e.at+a.timedTpMin!*60_000).toISOString()} at >= +${a.timedTpPct}% net unless trailing arms.`]:[]),
+            ...((a.maxHoldMin??0)>0?[`Maximum hold deadline ${new Date(e.at+a.maxHoldMin!*60_000).toISOString()} unless trailing arms.`]:[]),
+          ]),
         ]:[]),
       ].join('\n')),
       'Quotes include uncollected fees, swap haircuts and a gas reserve. Settlement can differ. Polling may miss spikes.',
