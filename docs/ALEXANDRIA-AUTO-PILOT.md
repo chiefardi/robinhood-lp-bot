@@ -6,6 +6,21 @@ concurrent slots, plus timed exits, including the existing ASKR position.
 Code defaults do not enable trading or timers; production configuration requires
 explicit operator approval. Tests use offline transaction/RPC boundaries.
 
+## Hourly-delay removal deployment — 2026-09-20
+
+- Runtime `8d2ea09` deployed to Alexandria; service restarted at 05:19:53 UTC
+  (12:19:53 WIB). Auto remained enabled and the existing session was preserved.
+- Pre-stop wallet nonces matched (26 confirmed / 26 pending); no reserved,
+  closing, uncertain or latched-close workflow was present.
+- Root-only backup: `/var/backups/robinhood-lp-no-hourly-20260920/`.
+- All 188 tests and both TypeScript configurations passed on the server.
+  Independent review found no control blockers; obsolete setting-help text was removed.
+- Live readback: legacy `maxPerHour=0`, entries unpaused, entry gate ready,
+  HOTDOG #2987913 open and two slots free. This is a point-in-time snapshot,
+  not a promise that another pool will qualify. Status was delivered to Telegram.
+- Watch, Hunt and 30-second exit management restarted successfully. No manual
+  trade was forced; all normal screening, funding and risk checks remain required.
+
 ## Controls and limits
 
 - New sessions start paused. `/auto on` starts exit monitoring but leaves entries
