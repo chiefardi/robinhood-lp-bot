@@ -33,6 +33,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
       prepare: async () => {
         assertKyberConfigured();
         const a = cfg.autoLp;
+        const mode=a.mode;
         if (!a.sources.includes(candidate.source)) throw new Error('source not allowed');
         if (inOorCooldown(candidate.token)) throw new Error('OOR cooldown');
         const llmBlock = llmFailure(verdict,a.requireLlm,a.requireAction,a.minScore);
@@ -77,7 +78,9 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         sizeEth = a.sizeUsd / price.usd;
         if (!Number.isFinite(sizeEth) || sizeEth <= 0 || before.eth < GAS_RESERVE || before.eth + before.weth - GAS_RESERVE < sizeEth) throw new Error('insufficient or invalid wallet balances');
         const {USDG} = await import('../chain/v4/discover.js');
-        const funding = await preflightKyberFunding(USDG,ethers.parseEther(sizeEth.toFixed(18)));
+        const funding = mode==='asymmetric'
+          ? await (await import('../chain/v4/asymmetric.js')).preflightAsymmetricFunding(q.v4,USDG,ethers.parseEther(sizeEth.toFixed(18)),preflightKyberFunding,a.slPct,a.sizeUsd,a.exitCostBufferUsd)
+          : await preflightKyberFunding(USDG,ethers.parseEther(sizeEth.toFixed(18)));
         // Do not start with a funding round trip already beyond the approved SL.
         const fundingLossPct=(1-Number(funding.returnWei)/Number(ethers.parseEther(sizeEth.toFixed(18))))*100;
         if(!Number.isFinite(fundingLossPct)||fundingLossPct>=a.slPct)throw new Error('Funding round trip exceeds pilot stop-loss budget');
@@ -86,14 +89,16 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (finalSecurity) throw new Error(finalSecurity);
         const finalActivity = poolActivityFailure(q,limits,Date.now());
         if (finalActivity) throw new Error(finalActivity);
-        log.info(`funding preflight ${candidate.symbol}: ETH/USDG buy simulated; USDG/ETH return built`);
-        return {q,mint,price,before,g,funding,sizeEth,sizeUsd:a.sizeUsd,mode:a.mode};
+        if(cfg.autoLp.mode!==mode)throw new Error('Entry mode changed during preflight');
+        log.info(`funding preflight ${candidate.symbol}: ${mode==='asymmetric'?'both ETH funding legs simulated; both returns built':'ETH/USDG buy simulated; USDG/ETH return built'}`);
+        return {q,mint,price,before,g,funding,sizeEth,sizeUsd:a.sizeUsd,mode};
       },
       reserve: p => reservationId=riskStore.reserveEntry({token:candidate.token,sizeUsd:p.sizeUsd,sizeEth:p.sizeEth}),
       execute: async p => {
         const width = Math.max(6,Math.min(24,Math.round(8+p.q.volPct/5)));
         const amount = p.sizeEth.toFixed(18);
         const strict={fixedEntryPrice:p.price.usd,priceObservedAt:p.price.observedAt,sizeUsd:p.sizeUsd,expectedPoolId:p.q.v4.poolId,assertActive:()=>{
+          if(cfg.autoLp.mode!==p.mode)throw new Error('Entry mode changed during execution');
           const securityBlock=securityFailure(p.g,cfg.autoLp.maxTaxPct,Date.now());
           if(securityBlock)throw new Error(securityBlock);
           const activityBlock=poolActivityFailure(p.q,activityLimits(candidate.source,cfg.watch,cfg.autoLp),Date.now());
@@ -105,8 +110,8 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
           const session=riskStore.snapshot();
           if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('entry paused during execution');
         }};
-        const opened = p.mode === 'inrange'
-          ? await p.mint.openV4UsdgInRange(p.q.v4,amount,{widthSpacings:width,strict})
+        const opened = p.mode === 'inrange'||p.mode === 'asymmetric'
+          ? await p.mint.openV4UsdgInRange(p.q.v4,amount,{widthSpacings:width,asymmetric:p.mode==='asymmetric',strict})
           : await p.mint.openV4UsdgSingleSide(p.q.v4,amount,{strict});
         if (!opened.tokenId || opened.poolId.toLowerCase() !== p.q.v4.poolId.toLowerCase()) throw new Error('mint identity uncertain');
         if(!Number.isSafeInteger(opened.blockNumber)||opened.blockNumber!<=0)throw new Error('final entry receipt block unavailable');

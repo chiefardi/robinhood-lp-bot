@@ -25,6 +25,7 @@ import { ethUsd } from "../price.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
 import { validateEntryBudget, strictMintAmounts, type StrictEntryBudget } from '../../radar/entry-guard.js';
+import {asymmetricBudget,asymmetricRange} from './asymmetric.js';
 
 const { Ether, Token, Percent, CurrencyAmount } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
@@ -41,9 +42,10 @@ export interface V4OpenResult {
   depositEth: string;
   poolId: string;
   blockNumber?:number;
+  mode?:string;
 }
 
-type V4Dep = { depositWei: string; ts: number; poolId: string; fee: number; tickLower: number; tickUpper: number; mode: string; dep0?: string; dep1?: string };
+type V4Dep = { depositWei: string; ts: number; poolId: string; fee: number; tickLower: number; tickUpper: number; mode: string; entryStrategy?:string; dep0?: string; dep1?: string };
 
 export function saveV4Deposit(tokenId: string, rec: V4Dep): void {
   const d = readJson<Record<string, V4Dep>>(POS_FILE, {});
@@ -430,9 +432,10 @@ export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigin
 export async function openV4UsdgInRange(
   pool: V4Pool,
   amountEthStr: string,
-  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number; strict?:StrictEntryBudget },
+  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number; asymmetric?:boolean; strict?:StrictEntryBudget },
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const strict=opts?.strict;
+  if(opts?.asymmetric&&(opts.increaseTokenId||opts.range))throw new Error('Asymmetric mode opens new positions only');
   if (strict) {
     validateEntryBudget(pool,amountEthStr,strict);
     if (opts?.increaseTokenId || opts?.range) throw new Error('strict pilot prohibits top-ups');
@@ -455,7 +458,8 @@ export async function openV4UsdgInRange(
   const half = Math.max(1, Math.round((opts?.widthSpacings ?? 8) / 2));
   const anchor0 = Math.floor(pool.tick / sp) * sp;
   const fracC1 = Math.min(0.95, Math.max(0.05, swapFractionV4(pool.tick, anchor0 - half * sp, anchor0 + half * sp)));
-  const ethForC1 = (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
+  const asymmetric=opts?.asymmetric?asymmetricBudget(pool,c0.toLowerCase()===USDG.toLowerCase(),total):undefined;
+  const ethForC1 = asymmetric?.amount1 ?? (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
   const ethForC0 = total - ethForC1;
 
   const bal = async (a: string,block?:number): Promise<bigint> => {
@@ -525,8 +529,9 @@ export async function openV4UsdgInRange(
   const livePool = new Pool(cur0, cur1, pool.fee, pool.tickSpacing, pool.poolKey.hooks, liveSqrt.toString(), liveLiq.toString(), liveTick);
   // INCREASE mode: reuse the EXISTING position's range (must match the NFT exactly). Open mode: fresh anchor.
   const anchor = Math.floor(liveTick / sp) * sp;
-  const tickLower = opts?.range ? opts.range.tickLower : anchor - half * sp;
-  const tickUpper = opts?.range ? opts.range.tickUpper : anchor + half * sp;
+  const freshAsymmetric=opts?.asymmetric?asymmetricRange({sqrtPriceX96:liveSqrt,tick:liveTick,tickSpacing:sp},usdgIsC0):undefined;
+  const tickLower = freshAsymmetric?.tickLower ?? (opts?.range ? opts.range.tickLower : anchor - half * sp);
+  const tickUpper = freshAsymmetric?.tickUpper ?? (opts?.range ? opts.range.tickUpper : anchor + half * sp);
 
   // Tight 1% buffer — safe now that state is fresh (re-read → mint is milliseconds); staticCall guards.
   // INCREASE on an existing (often volatile / high-fee, e.g. 10%) pool: the price can move between
@@ -581,6 +586,7 @@ export async function openV4UsdgInRange(
       tickLower,
       tickUpper,
       mode: "inrange",
+      entryStrategy: opts?.asymmetric?'asymmetric':undefined,
       dep0: ((prev?.dep0 ? BigInt(prev.dep0) : 0n) + add0).toString(),
       dep1: ((prev?.dep1 ? BigInt(prev.dep1) : 0n) + add1).toString(),
     });
@@ -600,7 +606,7 @@ export async function openV4UsdgInRange(
     }
   } else await sweepLeftoverToEth([{ addr: c0, dec: m0.decimals }, { addr: c1, dec: m1.decimals }]).catch(() => undefined);
   log.info(`${opts?.increaseTokenId ? "increase" : "open"} v4 USDG in-range #${tokenId} ${m0.symbol}/${m1.symbol} fee ${pool.fee / 10000}% ${opts?.increaseTokenId ? "+" : ""}${amountEthStr}Ξ`);
-  return { tokenId, txHash: tx.hash, swapHash, swappedPct: 100, fee: pool.fee, tickLower, tickUpper, depositEth: amountEthStr, poolId: pool.poolId, blockNumber:finalBlock };
+  return { tokenId, txHash: tx.hash, swapHash, swappedPct: 100, fee: pool.fee, tickLower, tickUpper, depositEth: amountEthStr, poolId: pool.poolId, blockNumber:finalBlock,mode:opts?.asymmetric?'asymmetric':'inrange' };
 }
 
 /**
@@ -645,9 +651,9 @@ export async function increaseV4Position(tokenId: string, amountEthStr: string):
 }
 
 /**
- * SINGLE-SIDE USDG on a token/USDG v4 pool: park ONLY USDG (no token), range on the side that keeps
- * the position 100% USDG until the token PUMPS into range (rug-safe — if the token dumps you keep
- * your USDG). USDG=currency0 → range ABOVE tick (fromAmount0); USDG=currency1 → range BELOW tick
+ * SINGLE-SIDE USDG on a token/USDG v4 pool: park ONLY USDG below USDG-per-token spot.
+ * A token decline enters the range and progressively converts USDG to token; this is NOT rug-safe.
+ * USDG=currency0 → range ABOVE tick (fromAmount0); USDG=currency1 → range BELOW tick
  * (fromAmount1). Funds the USDG side entirely from the ETH budget via Kyber.
  */
 export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, opts?:{strict?:StrictEntryBudget}): Promise<V4OpenResult & { swapHash?: string }> {

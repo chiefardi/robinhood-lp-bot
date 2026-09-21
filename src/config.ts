@@ -91,7 +91,7 @@ const AutoLpSchema = z.object({
   maxHoldMin: z.number().finite().nonnegative().default(0),
   exitCostBufferUsd: z.number().finite().nonnegative().default(0.25),
   sizeEth: z.number().positive().default(0.001), // ETH per auto position
-  mode: z.enum(["single", "inrange"]).default("single"), // single = rug-safe
+  mode: z.enum(["single", "inrange", "asymmetric"]).default("single"), // asymmetric = -20/+10 USDG per token
   minScore: z.number().min(0).max(100).default(75), // radar LLM score floor
   requireAction: z.enum(["ape", "watch", "skip"]).default("ape"),
   requireLlm: z.boolean().default(true), // need an LLM verdict, not just GMGN

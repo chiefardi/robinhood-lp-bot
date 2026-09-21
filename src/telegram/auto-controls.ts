@@ -1,7 +1,7 @@
 import { RiskStore, PILOT_LIMITS, validateExitSettings, type ExitSettings } from '../radar/auto-risk.js';
 import {summarizeCash,positionObservationLines,reportChunks} from '../radar/cash-report.js';
 import {esc} from './format.js';
-interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number}
+interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number;mode?:string}
 interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean;checkFunding:()=>Promise<void>}
 function ready(a:AutoSettings):void {
   validateExitSettings(a);
@@ -70,6 +70,7 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
       `Alexandria Auto — ${a.enabled?'monitoring ON':'OFF'}; entries ${a.entryPaused||s?.paused?'PAUSED':block?'BLOCKED':'enabled'}`,
       `Session: ${s?s.id:'not initialized'}`,
       `Size: $${a.sizeUsd}; ${occupied.length}/${PILOT_LIMITS.maxOpen} occupied slots; ${Math.max(0,PILOT_LIMITS.maxOpen-occupied.length)} free; no hourly entry delay; outstanding basis $${used.toFixed(2)}/$90; cumulative loss circuit -$15.`,
+      `New-entry strategy: ${a.mode==='asymmetric'?'two-sided asymmetric, -20% / +10% USDG per token target (tick-rounded); existing positions unchanged':a.mode==='inrange'?'two-sided centered':'single-sided quote asset below token spot'}.`,
       'One wallet workflow at a time; every entry needs fresh screening and confirmed accounting.',
       `History: ${entries.length} attempts retained; settled slots reusable. ${block?'Entry gate: '+block:'Entry gate: ready (screening still required)'}.`,
       `Hard SL: ${a.slPct>0?'-'+a.slPct+'%':'off'}; fixed TP: ${a.tpPct>0?'+'+a.tpPct+'%':'off'}; trailing: ${a.trailActivationPct>0?'+'+a.trailActivationPct+'% / '+a.trailGivebackPct+'pp':'off'}.`,

@@ -7,13 +7,16 @@ import {ethers} from 'ethers';
 import sdkCore from '@uniswap/sdk-core';
 import sdkV4 from '@uniswap/v4-sdk';
 import * as guard from '../src/radar/entry-guard.ts';
+import * as asymmetric from '../src/chain/v4/asymmetric.ts';
 
 const USDG='0x5fc5360d0400a0fd4f2af552add042d716f1d168', TOKEN='0x6666666666666666666666666666666666666666',USER='0x2222222222222222222222222222222222222222', POSM='0x1111111111111111111111111111111111111111';
 const pk={currency0:USDG,currency1:TOKEN,fee:30000,tickSpacing:600,hooks:ethers.ZeroAddress};
 const poolId=ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(pk)));
 const pool={poolKey:pk,poolId,fee:30000,tickSpacing:600,liquidity:10n**18n,sqrtPriceX96:2n**96n,tick:0,lpFee:30000,quote:'usd'};
 
-function fixture(flag={}) {
+function fixture(flag={},poolInput=pool) {
+  const pool=poolInput;
+  const TOKEN=(pool.poolKey.currency0.toLowerCase()===USDG?pool.poolKey.currency1:pool.poolKey.currency0).toLowerCase();
   const originalToken=1000000000n, originalUsd=1000000000n;
   const holdings=new Map([[TOKEN,originalToken],[USDG,originalUsd]]);
   const calls={sends:[],swaps:[],amounts:[],approved:[]};
@@ -23,7 +26,7 @@ function fixture(flag={}) {
     async balanceOf(_owner,opts){if(flag.balanceFail)throw new Error('balance failure');if(flag.cachedAfterMint&&minted&&opts?.blockTag==null)return this.address===USDG?originalUsd:originalToken;return holdings.get(this.address)??0n;}
     async allowance(){return ethers.MaxUint256;}
     async approve(...args){calls.approved.push(args);return {hash:'0xapprove'};}
-    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return {sqrtPriceX96:pool.sqrtPriceX96,tick:0};}
+    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return flag.moveAfterFunding?{sqrtPriceX96:BigInt(Math.floor(2**96*1.0001**300.25)),tick:600,lpFee:30000}:{sqrtPriceX96:pool.sqrtPriceX96,tick:0,lpFee:30000};}
     async getLiquidity(){return pool.liquidity;}
   }
   const P=sdkV4.Position;
@@ -38,8 +41,8 @@ function fixture(flag={}) {
       if(tx.hash==='0xmint'){
         if(flag.waitFail)throw new Error('timeout');
         minted=true;
-        holdings.set(USDG,holdings.get(USDG)-BigInt(position.amount0.quotient.toString()));
-        holdings.set(TOKEN,holdings.get(TOKEN)-BigInt(position.amount1.quotient.toString()));
+        holdings.set(pool.poolKey.currency0.toLowerCase(),holdings.get(pool.poolKey.currency0.toLowerCase())-BigInt(position.amount0.quotient.toString()));
+        holdings.set(pool.poolKey.currency1.toLowerCase(),holdings.get(pool.poolKey.currency1.toLowerCase())-BigInt(position.amount1.quotient.toString()));
       }
       return receipt;
     }},
@@ -55,13 +58,39 @@ function fixture(flag={}) {
     '../price.js':{ethUsd:async()=>{throw new Error('strict must never read legacy price');}},
     '../../util/files.js':{dataPath:x=>x,readJson:()=>({}),writeJson:()=>{}},'../../util/log.js':{logger:()=>({info(){}})},
     '../../radar/entry-guard.js':guard,
+    './asymmetric.js':asymmetric,
   };
   const source=readFileSync(new URL('../src/chain/v4/mint.ts',import.meta.url),'utf8');
   const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const api={};vm.runInNewContext(code,{exports:api,require(name){assert.ok(Object.hasOwn(deps,name),name);return deps[name];},setTimeout,clearTimeout});
-  const strict={fixedEntryPrice:2000,sizeUsd:30,priceObservedAt:Date.now(),expectedPoolId:poolId,assertActive:()=>{if(flag.paused)throw new Error('paused');}};
+  const strict={fixedEntryPrice:2000,sizeUsd:30,priceObservedAt:Date.now(),expectedPoolId:pool.poolId,assertActive:()=>{if(flag.paused)throw new Error('paused');}};
   return {api,calls,holdings,originalToken,originalUsd,strict};
 }
+
+test('asymmetric mint buys the tick-derived token share and reanchors -20/+10 after funding',async()=>{
+ const f=fixture({moveAfterFunding:true});
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tickLower,-600);assert.equal(r.tickUpper,3000);
+ const buys=f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress);
+ assert.equal(buys.length,2);
+ assert(buys.find(s=>s.output.toLowerCase()===TOKEN).amount<7500000000000000n);
+ assert.equal(buys.reduce((n,s)=>n+s.amount,0n),15000000000000000n);
+ assert.equal(r.mode,'asymmetric');
+ assert.equal(f.holdings.get(TOKEN),f.originalToken);
+ assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('asymmetric mint also stays USDG-heavy when token is currency0',async()=>{
+ const token='0x4444444444444444444444444444444444444444';
+ const key={...pk,currency0:token,currency1:USDG};
+ const reverse={...pool,poolKey:key,poolId:ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(key)))};
+ const f=fixture({moveAfterFunding:true},reverse);
+ const r=await f.api.openV4UsdgInRange(reverse,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tickLower,-1800);assert.equal(r.tickUpper,1800);
+ const buys=f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress);
+ assert(buys.find(s=>s.output.toLowerCase()===token).amount<7500000000000000n);
+ assert.equal(f.holdings.get(token),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
 
 test('strict inrange mint caps whole-wallet funds and leaves all preheld tokens untouched',async()=>{
   const f=fixture();await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,widthSpacings:8});

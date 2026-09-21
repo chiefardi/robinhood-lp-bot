@@ -27,6 +27,14 @@ const esc = (s) => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').re
 const format = { esc, pre: (s) => `<pre>${esc(s)}</pre>`, padR: (s, n) => s.padEnd(n), tokenEmoji: () => '🐱' };
 const indonesian = /\b(gagal|harga|nembus|posisi|berhenti|makan|dibuka|ditutup|cek|beli|jual|belum|ketangkep|lolos|rame|saran|besok|skrg|naikin|turunin|kumpulin|harian|analisa|kosong)\b/i;
 
+test('asymmetric entry notice distinguishes token exposure from parked single-side',async()=>{
+ const messages=[];
+ const api=loadModule('notify.ts',{'./tg.js':{send:async text=>messages.push(text),explorerTx:h=>h},'./format.js':format,'../util/format.js':{fmtMcap:String},'../radar/fast-hunt.js':{formatActivityCoverage}});
+ await api.notifyAutoLp({opened:true,symbol:'TEST',sizeEth:.01,result:{tokenId:'1',mode:'asymmetric',tickLower:-1200,tickUpper:2400,txHash:'0xabc'}});
+ assert.match(messages[0],/asymmetric.*-20%.*\+10%/i);
+ assert.doesNotMatch(messages[0],/single-sided|park quote asset/);
+});
+
 test('all notification types use English while retaining metadata and callback IDs', async () => {
   const messages = [];
   const api = loadModule('notify.ts', {

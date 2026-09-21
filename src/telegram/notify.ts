@@ -158,8 +158,8 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
   const res = r.result;
   await send(
     [
-      `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange" ? "🎯" : "🛡"}`,
-      `Automatically opened ${r.sizeEth}Ξ single-sided (${esc(res.side ?? "park quote asset")})`,
+      `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange"||res.mode==='asymmetric' ? "🎯" : "🛡"}`,
+      `Automatically opened ${r.sizeEth}Ξ ${res.mode==='asymmetric'?'two-sided asymmetric (-20% / +10% USDG per token target; tick-rounded)':res.mode==='inrange'?'two-sided in-range':`single-sided (${esc(res.side ?? "park quote asset")})`}`,
       `${res.entryMcap ? `entry MCAP ${fmtMcap(res.entryMcap)} · ` : ""}range tick ${res.tickLower}..${res.tickUpper}`,
       res.swapHash ? `swap: <a href="${explorerTx(res.swapHash)}">tx</a> · mint: <a href="${explorerTx(res.txHash)}">tx</a>` : `mint: <a href="${explorerTx(res.txHash)}">tx</a>`,
       `<i>Check /list · close manually at any time</i>`,
