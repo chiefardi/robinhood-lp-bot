@@ -597,8 +597,9 @@ export async function openV4UsdgInRange(
       const remaining=(await bal(addr,finalBlock))-original;
       if (remaining<0n) throw new Error('strict mint consumed pre-held tokens');
       if (remaining>0n) {
-        strict.assertActive();
-        const swept=await kyberSwap(addr,KYBER_NATIVE,remaining,{assertActive:strict.assertActive});
+        const assertCleanup=strict.assertCleanupActive??strict.assertActive;
+        assertCleanup();
+        const swept=await kyberSwap(addr,KYBER_NATIVE,remaining,{assertActive:assertCleanup});
         if (!swept || swept.amountOut<=0n || !Number.isSafeInteger(swept.blockNumber) || swept.blockNumber!<finalBlock!) throw new Error('strict entry token refund uncertain');
         finalBlock=swept.blockNumber;
       }
@@ -778,8 +779,9 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, o
     const remaining=BigInt(await usdgC.balanceOf!(w.address,{blockTag:finalBlock}))-held0;
     if (remaining<0n) throw new Error('strict mint consumed preheld USDG');
     if (remaining>0n) {
-      strict.assertActive();
-      const swept=await kyberSwap(usdgAddr,KYBER_NATIVE,remaining,{assertActive:strict.assertActive});
+      const assertCleanup=strict.assertCleanupActive??strict.assertActive;
+      assertCleanup();
+      const swept=await kyberSwap(usdgAddr,KYBER_NATIVE,remaining,{assertActive:assertCleanup});
       if (!swept || swept.amountOut<=0n || !Number.isSafeInteger(swept.blockNumber) || swept.blockNumber!<finalBlock!) throw new Error('strict USDG refund uncertain');
       finalBlock=swept.blockNumber;
     }

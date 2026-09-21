@@ -25,7 +25,10 @@ for(const failure of ['', 'token-route', 'cost', 'mode-change'])test(`asymmetric
   '../chain/v4/asymmetric.js':asymmetric,
   '../chain/kyber.js':{assertKyberConfigured(){},preflightKyberFunding:async(token,n)=>{funding.push([token,n]);if(failure==='token-route'&&token===TOKEN)throw Error('token return route unavailable');return {amountOut:1n,returnWei:failure==='cost'?n*80n/100n:n,observedAt:Date.now()};}},
   '../chain/v4/mint.js':{openV4UsdgSingleSide:async()=>{throw Error('Wrong single-sided path')},openV4UsdgInRange:async(_pool,_amount,opts)=>{
-   assert.equal(opts.asymmetric,true);if(failure==='mode-change')cfg.autoLp.mode='single';opts.strict.assertActive();mints++;return {tokenId:'1',poolId:ID,blockNumber:42,tickLower:-960,tickUpper:2240,mode:'asymmetric'};
+   assert.equal(opts.asymmetric,true);if(failure==='mode-change')cfg.autoLp.mode='single';opts.strict.assertActive();mints++;
+   security.observedAt=Date.now()-61000;opts.strict.assertCleanupActive();assert.throws(()=>opts.strict.assertActive());
+   cfg.autoLp.entryPaused=true;assert.throws(()=>opts.strict.assertCleanupActive(),/cleanup paused/);cfg.autoLp.entryPaused=false;
+   return {tokenId:'1',poolId:ID,blockNumber:42,tickLower:-960,tickUpper:2240,mode:'asymmetric'};
   }},
  };
  const code=ts.transpileModule(readFileSync(new URL('../src/radar/autolp.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;

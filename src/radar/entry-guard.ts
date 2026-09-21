@@ -5,7 +5,7 @@ import type { V4Pool } from '../chain/v4/discover.js';
 import { ethers } from 'ethers';
 import {holderFailure, type HolderEvidence} from './holder-coverage.js';
 
-export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void}
+export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void;assertCleanupActive?():void}
 export function validateEntryBudget(pool:V4Pool,amountEth:string,o:StrictEntryBudget,now=Date.now()):void {
   o.assertActive();
   const key=pool.poolKey;

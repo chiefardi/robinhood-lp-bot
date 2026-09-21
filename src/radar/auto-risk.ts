@@ -30,10 +30,13 @@ const rejectedNoBroadcastSchema=z.object({
   runtimeCommit:z.string().regex(/^[0-9a-f]{40}$/),reason:z.literal('invalid strict pool'),
 }).strict().refine(e=>e.beforeNonce===e.latestNonce&&e.latestNonce===e.pendingNonce,'Wallet nonce changed');
 const noBroadcastSchema=z.union([pristineNoBroadcastSchema,rejectedNoBroadcastSchema]);
+const entryRecoverySchema=z.object({tokenId:z.string().regex(/^\d+$/),cashDebitWei:z.string().regex(/^[1-9]\d*$/),ethUsd:positive,
+  observedAt:positive,blockNumber:z.number().int().positive(),receiptHashes:z.array(z.string().regex(/^0x[0-9a-f]{64}$/i)).min(1)}).strict();
 const entrySchema = z.object({
   id:z.string(),token:z.string(),sizeUsd:positive,sizeEth:positive,at:positive,
   status:z.enum(['reserved','open','closing','closed','uncertain','aborted']),
   noBroadcastEvidence:noBroadcastSchema.optional(),
+  entryRecoveryEvidence:entryRecoverySchema.optional(),
   tokenId:z.string().optional(),basisUsd:positive.optional(),
   peakPct:z.number().finite().optional(),armed:z.boolean().default(false),
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
@@ -181,6 +184,16 @@ export class RiskStore {
   }
   openPositions():Array<Entry & {tokenId:string;basisUsd:number}> {
     return (this.read().session?.entries??[]).filter((e):e is Entry & {tokenId:string;basisUsd:number}=>e.status!=='closed'&&!!e.tokenId&&!!e.basisUsd);
+  }
+  /** Operator only: verify ownership, receipts, inventory and cleanup before calling.
+   * Does not resume entries or reset the original holding clock. */
+  reconcileMintedEntry(id:string,input:z.infer<typeof entryRecoverySchema>):void {
+    const proof=entryRecoverySchema.parse(input),s=this.read(),r=s.session,e=r?.entries.find(x=>x.id===id);
+    if(!r||!r.paused||r.lossTriggered||!e||e.status!=='uncertain'||e.tokenId||e.basisUsd||e.closeReason||r.entries.some(x=>x.tokenId===proof.tokenId))throw Error('Entry is not an unresolved mint');
+    if(proof.observedAt>this.now()||this.now()-proof.observedAt>60000||proof.observedAt<e.at)throw Error('Stale recovery evidence');
+    const basisUsd=Number(BigInt(proof.cashDebitWei))/1e18*proof.ethUsd;positive.parse(basisUsd);
+    Object.assign(e,{status:'open',tokenId:proof.tokenId,basisUsd,entryRecoveryEvidence:proof});
+    this.setPause(r,'Mint reconciled; entries paused pending fresh exit protection','manual');this.save(s);
   }
   evaluatePosition(tokenId:string,q:ExitSnapshot,settings:ExitSettings) {
     validateExitSettings(settings);

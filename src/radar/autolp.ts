@@ -109,6 +109,11 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
           if (Date.now()<p.funding.observedAt || Date.now()-p.funding.observedAt>60_000) throw new Error('funding preflight expired before broadcast');
           const session=riskStore.snapshot();
           if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('entry paused during execution');
+        },assertCleanupActive:()=>{
+          // After a confirmed mint, dispose only the newly acquired leftover.
+          // Entry data expiry must not prevent settlement; operator stops still do.
+          const session=riskStore.snapshot();
+          if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('cleanup paused during execution');
         }};
         const opened = p.mode === 'inrange'||p.mode === 'asymmetric'
           ? await p.mint.openV4UsdgInRange(p.q.v4,amount,{widthSpacings:width,asymmetric:p.mode==='asymmetric',strict})

@@ -74,6 +74,19 @@ for(const fee of [10000,19000,20000,30000,50000,9999,50001])test(`strict asymmet
  else {const r=await f.api.openV4UsdgInRange(p,'0.015',{strict:f.strict,asymmetric:true});assert.equal(r.tokenId,'7');assert.equal(f.calls.sends.length,1);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);}
 });
 
+test('confirmed mint cleanup uses settlement permission rather than expired entry eligibility',async()=>{
+ const f=fixture();let cleanup=0;
+ f.strict.assertActive=()=>{if(f.calls.sends.length)throw Error('exact pool activity stale or missing');};
+ f.strict.assertCleanupActive=()=>{cleanup++;};
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tokenId,'7');assert(cleanup>0);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+test('confirmed mint cleanup still honors explicit settlement stop',async()=>{
+ const f=fixture();f.strict.assertCleanupActive=()=>{throw Error('settlement stopped');};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),/settlement stopped/);
+ assert.equal(f.calls.sends.length,1);
+});
+
 test('asymmetric mint buys the tick-derived token share and reanchors -20/+10 after funding',async()=>{
  const f=fixture({moveAfterFunding:true});
  const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
