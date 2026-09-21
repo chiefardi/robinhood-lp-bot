@@ -41,3 +41,12 @@ All five commands were rerun together against the final implementation tree befo
 - Persistence means repeated provider snapshots, not independent/non-overlapping five-minute buckets, organic-volume proof or a profit guarantee. Sampling does not reconstruct exact historical range occupancy. Downtime/gaps have no fabricated activity or fee earnings.
 - Existing funded-route preflight builds/simulates read-only route data; it does not guarantee a later fill. Expected and buffered valuations remain estimates, not settled cash. Historical cash basis/settlements are not backfilled or recomputed.
 - Coordinator owns independent review and Task 2 deployment/preflight/resume. Keep branch/workspace as-is for that review.
+
+## Final review P2: preserve same-token pool preference
+
+- Reproduced the loss of history preference inside qualification: the same token's persistent pool (m5 $2,000 / h24 $30,000) lost to an unknown pool (m5 $9,000 / h24 $100,000), even after the initial history-aware batching selected that token.
+- Hunt now passes exact-pool history into full qualification. Only after all existing gates pass, survivors are ranked by persistence and then current exact-pool m5 volume. Unknown pools remain eligible; callers without hunt history retain h24-fee ranking.
+- Fresh autolp qualification restricts discovery results to the previously selected exact pool and re-runs the same gates. A missing or newly ineligible selected pool yields no candidate, never a substitute. The existing independent `expectedPoolFailure` mismatch check remains unchanged.
+- RED: `node --import tsx --test tests/qualification-history.test.mjs` initially failed all three cases with spike pool `0xcccc...` instead of selected pool `0xbbbb...` (same-token persistence, exact-pool refresh, equal-history m5 ordering).
+- GREEN: focused six-file regression run passed 44/44; full suite passed 242/242; typecheck, build, ops typecheck and diff whitespace checks exited 0. The new regression then additionally exercised the real async qualifier with only discovery/DEX provider boundaries replaced, and all 3/3 cases passed again. No live calls or transaction operations were used.
+- Regression coverage also proves unknown-pool eligibility, persistent pools cannot bypass liquidity gates, failed/missing selected pools cannot substitute, and non-hunt h24-fee ordering is preserved. Deployment/live verification remains the coordinator's separate responsibility.

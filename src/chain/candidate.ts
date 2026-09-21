@@ -9,7 +9,11 @@ import { dexPairs, type DexPair } from "./dexscreener.js";
 import { poolActivityFailure } from "../radar/entry-guard.js";
 import type {ActivityCoverage} from '../radar/fast-hunt.js';
 
-export interface AutoPoolActivity {minVol5m:number;minVol1h:number;now:number}
+export interface AutoPoolActivity {
+  minVol5m:number;minVol1h:number;now:number;
+  coverage?:(poolId:string)=>ActivityCoverage;
+  expectedPoolId?:string;
+}
 export function discoveryTargetsForQuote(quoteFilter?:"eth"|"usd"):{eth:boolean;usd:boolean} {
   return {eth:quoteFilter!=='usd',usd:quoteFilter!=='eth'};
 }
@@ -36,7 +40,8 @@ export interface QualifiedPool {
  *     volume (a 5% pool at $8k vol beats a 3% pool at $9k), which is exactly what we farm.
  *   - daily fee/TVL yield ≥ minFeeYieldPct — only when TVL is readable (v4 singleton often reads $0,
  *     so this is skipped rather than blocking).
- * Ranks the survivors by absolute 24h fees (the real earning signal), not raw volume.
+ * Hunt ranks fully eligible survivors by repeated activity, then current m5 volume.
+ * Other callers retain absolute 24h-fee ranking. Fresh entry can pin the selected pool.
  */
 export function evaluateCandidatePools(
   pools: V4Pool[], dex: Map<string, DexPair>, s: typeof cfg.scan, quoteFilter?: "eth" | "usd", autoActivity?: AutoPoolActivity,
@@ -46,6 +51,7 @@ export function evaluateCandidatePools(
   const reject = (reason: string): void => { rejected[reason] = (rejected[reason] ?? 0) + 1; };
   if (!pools.length) reject('no-v4-pools-returned');
   for (const p of pools) {
+    if (autoActivity?.expectedPoolId && p.poolId.toLowerCase() !== autoActivity.expectedPoolId.toLowerCase()) { reject('pool-outside-selected'); continue; }
     if (quoteFilter && p.quote !== quoteFilter) { reject('quote-outside-target'); continue; }
     if (autoActivity && p.poolKey.hooks.toLowerCase() !== '0x0000000000000000000000000000000000000000') { reject('hooked-pool'); continue; }
     if (p.fee < s.feeMinPpm || p.fee > s.feeMaxPpm) { reject('fee-outside-band'); continue; }
@@ -69,7 +75,11 @@ export function evaluateCandidatePools(
     const volH1 = d?.volH1 ?? 0;
     const spikeX = volUsd > 0 ? volH1 / (volUsd / 24) : 0;
     if (s.minSpikeX > 0 && spikeX < s.minSpikeX) { reject('hourly-spike-below-minimum'); continue; }
-    if (!best || feesUsd > best.feesUsd) best = { v4: p, fee: p.fee, quote: p.quote, volUsd, liqUsd, feesUsd, feeYieldPct, volPct, volH1, spikeX,vol5m:d?.vol5m,buys5m:d?.buys5m,sells5m:d?.sells5m,observedAt:d?.observedAt };
+    const activity=autoActivity?.coverage?.(p.poolId);
+    const preferred=!best || (autoActivity?.coverage
+      ? Number(!!activity?.persistent)>Number(!!best.activity?.persistent) || (!!activity?.persistent===!!best.activity?.persistent && (d?.vol5m??0)>(best.vol5m??0))
+      : feesUsd>best.feesUsd);
+    if (preferred) best = { activity,v4: p, fee: p.fee, quote: p.quote, volUsd, liqUsd, feesUsd, feeYieldPct, volPct, volH1, spikeX,vol5m:d?.vol5m,buys5m:d?.buys5m,sells5m:d?.sells5m,observedAt:d?.observedAt };
   }
   return { pool: best, rejected };
 }

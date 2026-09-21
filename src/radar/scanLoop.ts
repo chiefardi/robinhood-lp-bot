@@ -187,7 +187,7 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     const {result:r}=x;
     const pool = await qualifyCandidate(r.token.address, reasons=>{
       for(const [reason,count] of Object.entries(reasons))qualificationRejects[reason]=(qualificationRejects[reason]??0)+count;
-    }, 'usd', {...activity,now:Date.now()}).catch(e => {
+    }, 'usd', {...activity,now:Date.now(),coverage:poolId=>activityHistory.coverage(poolId,Date.now())}).catch(e => {
       qualificationErrors++;
       log.warn(`qualify ${r.token.symbol}: ${(e as Error).message.slice(0,90)}`);
       return null;
