@@ -186,6 +186,25 @@ calculation; it is deterministic arithmetic.
 
 ## Verification
 
+### Cash-report deployment receipt — 2026-09-21 11:04 WIB
+
+- Tencent Alexandria deployed runtime commit `26e17f1aeea8b086b29454959497a91b3bdabcca`.
+- VPS verification: 202/202 tests, main and ops TypeScript checks, and build passed.
+- Five historical close timestamps were matched against the reviewed exact NFT-burn
+  and final-sweep receipt list, then backfilled under the stopped-bot process lock.
+- Backup: `/var/backups/robinhood-lp-cash-reports-20260921/`. A deep comparison
+  verified that only timestamp/evidence metadata changed; cash amounts, session,
+  pause state and runtime config were preserved.
+- Confirmed cash ledger: five closes, three wins/two losses, realized
+  `+$5.978803520283524`; zero open/unresolved positions. At 11:03 WIB the rolling
+  24-hour result was `+$2.5635565103314484` across three closes. The original
+  07:04 WIB briefing window instead contained four closes totaling `+$7.571024835597114`.
+- Real `/pnl` handler and manual briefing runner each delivered a corrected message;
+  Telegram acknowledged both (two successes, zero failures). Scheduler remains 07:00 WIB.
+- Service active/running, zero restarts; watch, hunt and management loops started.
+  New entries remain paused pending operator direction. No trade was broadcast by
+  this deployment. Confirmed/pending wallet nonce was 49/49 before deployment.
+
 Run `npm test`, `npm run typecheck`, `npm run build`, and `git diff --check`.
 Offline tests exercise persisted restarts, caps, missing state, trailing examples,
 unknown transactions, screening failures, quote math, received-only asset sales,
