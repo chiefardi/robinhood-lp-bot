@@ -27,7 +27,7 @@ async function runLockedCycle(store:RiskStore,settings:ExitSettings,d:Dependenci
   for(const p of store.openPositions()) {
     if(store.executionBlocked())break;
     if(d.isEnabled&&!d.isEnabled())break;
-    if(p.status!=='open'||!p.closeReason||!fresh.has(p.tokenId))continue;
+    if(p.status!=='open'||!p.closeReason||p.closeReason==='ENTRY_ABORT'||!fresh.has(p.tokenId))continue;
     let began=false,settled=false;
     try {
       // Earlier closes and later quote calls can age the initial cycle snapshot.

@@ -10,8 +10,8 @@ import { dataPath } from '../util/files.js';
 import {valuationSchema,productivitySchema,sampleProductivity,type Valuation} from './range-productivity.js';
 
 const positive = z.number().finite().positive();
-const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION','TIME_TP','MAX_HOLD']);
-export type RiskReason = z.infer<typeof reasonSchema>;
+const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION','TIME_TP','MAX_HOLD','ENTRY_ABORT']);
+export type RiskReason = Exclude<z.infer<typeof reasonSchema>,'ENTRY_ABORT'>;
 // Operator-only proof for a pristine wallet. This cannot clear an attempted broadcast.
 const pristineNoBroadcastSchema = z.object({
   chainId:z.literal(4663),wallet:z.string().regex(/^0x[0-9a-f]{40}$/i),
@@ -32,11 +32,14 @@ const rejectedNoBroadcastSchema=z.object({
 const noBroadcastSchema=z.union([pristineNoBroadcastSchema,rejectedNoBroadcastSchema]);
 const entryRecoverySchema=z.object({tokenId:z.string().regex(/^\d+$/),cashDebitWei:z.string().regex(/^[1-9]\d*$/),ethUsd:positive,
   observedAt:positive,blockNumber:z.number().int().positive(),receiptHashes:z.array(z.string().regex(/^0x[0-9a-f]{64}$/i)).min(1)}).strict();
+const entryUnwindSchema=z.object({cashDebitWei:z.string().regex(/^[1-9]\d*$/),cashReturnWei:z.string().regex(/^\d+$/),entryEthUsd:positive,exitEthUsd:positive,
+  observedAt:positive,blockNumber:z.number().int().positive(),receiptHashes:z.array(z.string().regex(/^0x[0-9a-f]{64}$/i)).min(1)}).strict();
 const entrySchema = z.object({
   id:z.string(),token:z.string(),sizeUsd:positive,sizeEth:positive,at:positive,
   status:z.enum(['reserved','open','closing','closed','uncertain','aborted']),
   noBroadcastEvidence:noBroadcastSchema.optional(),
   entryRecoveryEvidence:entryRecoverySchema.optional(),
+  entryUnwindEvidence:entryUnwindSchema.optional(),
   tokenId:z.string().optional(),basisUsd:positive.optional(),
   peakPct:z.number().finite().optional(),armed:z.boolean().default(false),
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
@@ -184,6 +187,18 @@ export class RiskStore {
   }
   openPositions():Array<Entry & {tokenId:string;basisUsd:number}> {
     return (this.read().session?.entries??[]).filter((e):e is Entry & {tokenId:string;basisUsd:number}=>e.status!=='closed'&&!!e.tokenId&&!!e.basisUsd);
+  }
+  /** Operator only: verified receipt chain, no minted NFT, restored token baselines.
+   * Records funding/rollback costs; never disguises a funded attempt as no-broadcast. */
+  reconcileUnwoundEntry(id:string,input:z.infer<typeof entryUnwindSchema>):void {
+    const proof=entryUnwindSchema.parse(input),s=this.read(),r=s.session,e=r?.entries.find(x=>x.id===id);
+    if(!r||!r.paused||!e||e.status!=='uncertain'||e.tokenId||e.basisUsd||e.closeReason)throw Error('Entry is not an unresolved funding attempt');
+    if(proof.observedAt>this.now()||this.now()-proof.observedAt>60000||proof.observedAt<e.at)throw Error('Stale unwind evidence');
+    const basisUsd=Number(BigInt(proof.cashDebitWei))/1e18*proof.entryEthUsd;
+    const realizedNetUsd=Number(BigInt(proof.cashReturnWei))/1e18*proof.exitEthUsd;
+    positive.parse(basisUsd);z.number().finite().nonnegative().parse(realizedNetUsd);
+    Object.assign(e,{status:'closed',basisUsd,realizedNetUsd,closeReason:'ENTRY_ABORT',closedAt:proof.observedAt,entryUnwindEvidence:proof});
+    this.setPause(r,'Failed entry unwound; entries paused pending health checks','manual');this.save(s);this.sessionLossCheck();
   }
   /** Operator only: verify ownership, receipts, inventory and cleanup before calling.
    * Does not resume entries or reset the original holding clock. */
