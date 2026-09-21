@@ -8,3 +8,11 @@ test('receipt-proven failed entry unwind releases execution block and records co
  store.reconcileUnwoundEntry(id,proof);const e=store.snapshot().entries[0];assert.equal(e.status,'closed');assert.equal(e.tokenId,undefined);assert.equal(e.basisUsd,29.29);assert.equal(e.realizedNetUsd,28.5);assert.equal(e.closeReason,'ENTRY_ABORT');assert.equal(e.at,now-10000);assert.equal(e.closedAt,now);assert.equal(store.executionBlocked(),false);assert.equal(store.snapshot().paused,true);assert.equal(store.snapshot().pauseKind,'manual');assert(Math.abs(summarizeCash(store.reportingSnapshot(),now).session.pnlUsd+.79)<1e-8);
  assert.throws(()=>store.reconcileUnwoundEntry(id,proof));
 });
+test('confirmed automatic funding rollback records net cash loss and leaves only a recoverable data pause',t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'rollback-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const now=1800000000000;
+ const store=new RiskStore(path.join(dir,'risk.json'),()=>now);store.startSession();store.resumeEntries();const id=store.reserveEntry({token:'token',sizeUsd:29,sizeEth:.01});
+ assert.equal(typeof store.commitEntryRollback,'function');
+ store.commitEntryRollback(id,{basisUsd:29.1,realizedNetUsd:27.8,blockNumber:7,receiptHashes:['0x'+'a'.repeat(64)]});
+ const e=store.snapshot().entries[0];assert.equal(e.status,'closed');assert.equal(e.basisUsd,29.1);assert.equal(e.realizedNetUsd,27.8);assert.equal(store.executionBlocked(),false);assert.equal(store.snapshot().pauseKind,'data');assert.equal(store.entryAllowed(),false);
+ assert.throws(()=>store.commitEntryRollback(id,{basisUsd:29.1,realizedNetUsd:27.8,blockNumber:7,receiptHashes:['0x'+'a'.repeat(64)]}));
+});

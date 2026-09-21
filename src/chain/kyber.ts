@@ -131,7 +131,7 @@ export async function preflightKyberFunding(tokenOut: string, amountIn: bigint):
  * Best-route swap. tokenIn = KYBER_NATIVE for ETH. Returns null if the aggregator can't route
  * (caller can fall back). Throws only on a SECURITY gate failure (never silently unsafe).
  */
-export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint, strict?:{assertActive():void}): Promise<KyberSwapResult | null> {
+export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: bigint, strict?:{assertActive():void;receiptObserved?(blockNumber:number):void}): Promise<KyberSwapResult | null> {
   strict?.assertActive();
   if (!kyberEnabled() || amountIn <= 0n) return null;
   const w = wallet();
@@ -168,6 +168,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
       const gas=await overrides();strict?.assertActive();
       const receipt=await waitTx(await erc.approve!(env.kyberRouter, amountIn, gas), "kyber-approve");
       if(strict&&receipt?.status!==1)throw new Error('strict Kyber approval uncertain');
+      if(strict?.receiptObserved){if(!receipt||!Number.isSafeInteger(receipt.blockNumber)||receipt.blockNumber<=0)throw Error('Approval receipt block unavailable');strict.receiptObserved(receipt.blockNumber);}
     }
   }
 
@@ -187,6 +188,7 @@ export async function kyberSwap(tokenIn: string, tokenOut: string, amountIn: big
   const tx = await w.sendTransaction({ to: env.kyberRouter, data: built.data, value, gasLimit: est * 2n, ...gas });
   const receipt=await waitTx(tx, "kyber-swap");
   if(strict&&(receipt?.status!==1||!Number.isSafeInteger(receipt.blockNumber)||receipt.blockNumber<=0))throw new Error('strict Kyber receipt uncertain');
+  if(strict?.receiptObserved)strict.receiptObserved(receipt!.blockNumber);
   const after = await outBal(strict?receipt!.blockNumber:undefined);
   // Native balance delta is NET of this swap's gas. A successful tiny USDG refund
   // can receive ETH while the wallet balance falls; callers need gross tokens out.

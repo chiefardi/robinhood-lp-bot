@@ -48,10 +48,11 @@ function fixture(flag={},poolInput=pool) {
     }},
     '../tokens.js':{tokenMeta:async a=>({symbol:a.toLowerCase()===USDG?'USDG':'TEST',decimals:6})},
     './discover.js':{USDG},'./swap.js':{},
-    '../kyber.js':{KYBER_NATIVE:ethers.ZeroAddress,kyberEnabled:()=>true,kyberSwap:async(input,output,amount)=>{
+    '../kyber.js':{KYBER_NATIVE:ethers.ZeroAddress,kyberEnabled:()=>true,kyberSwap:async(input,output,amount,strict)=>{
       calls.swaps.push({input,output,amount});
       if(minted && flag.sweepFail)throw new Error('sweep uncertain');
-      if(input===ethers.ZeroAddress){const raw=amount*2000n*10n**6n/10n**18n;holdings.set(output.toLowerCase(),holdings.get(output.toLowerCase())+raw);return {tx:'0xswap',amountOut:raw,blockNumber:41};}
+      if(input===ethers.ZeroAddress){const raw=amount*2000n*10n**6n/10n**18n;holdings.set(output.toLowerCase(),holdings.get(output.toLowerCase())+raw);strict?.receiptObserved?.(41);return {tx:'0xswap',amountOut:raw,blockNumber:41};}
+      if(flag.rollbackFail)throw Error('refund receipt unknown');
       holdings.set(input.toLowerCase(),holdings.get(input.toLowerCase())-amount);return {tx:'0xsweep',amountOut:1n,blockNumber:43};
     }},
     './poolkey.js':{NATIVE:ethers.ZeroAddress},'./abis.js':{STATEVIEW_ABI:[],V4_POSM_ABI:[]},'../blockscout.js':{},'../abis.js':{},
@@ -80,6 +81,41 @@ test('confirmed mint cleanup uses settlement permission rather than expired entr
  f.strict.assertCleanupActive=()=>{cleanup++;};
  const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
  assert.equal(r.tokenId,'7');assert(cleanup>0);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('known eligibility expiry after funding unwinds acquired assets without minting or sweeping old holdings',async()=>{
+ const f=fixture();f.strict.assertActive=()=>{if(f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress).length===2)throw new guard.EntryEligibilityError('activity expired');};
+ f.strict.assertCleanupActive=()=>{};f.strict.captureRollbackCash=async()=>({eth:.98,weth:0,blockNumber:41});
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>e instanceof guard.EntryRolledBackError&&e.blockNumber===43);
+ assert.equal(f.calls.sends.length,0);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('ambiguous mint receipt never triggers a funding rollback',async()=>{
+ const f=fixture({waitFail:true});f.strict.assertCleanupActive=()=>{};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),/timeout/);
+ assert.equal(f.calls.sends.length,1);assert.equal(f.calls.swaps.filter(s=>s.input!==ethers.ZeroAddress).length,0);
+});
+test('rollback cash boundary includes confirmed Permit2 approvals after the funding receipts',async()=>{
+ const f=fixture();let high=0;
+ f.strict.receiptObserved=n=>{high=Math.max(high,n);};
+ f.strict.assertActive=()=>{if(f.calls.approved.length===1)throw new guard.EntryEligibilityError('expired');};
+ f.strict.assertCleanupActive=()=>{};f.strict.captureRollbackCash=async()=>{assert.equal(high,42);return {eth:.98,weth:0,blockNumber:high};};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>e instanceof guard.EntryRolledBackError&&e.cashBeforeRollback.blockNumber===42);
+ assert.equal(f.calls.sends.length,0);
+});
+for(const stop of ['refund','operator'])test(`funding rollback ${stop} failure cannot report a successful recovery`,async()=>{
+ const f=fixture({rollbackFail:stop==='refund'});f.strict.assertActive=()=>{if(f.calls.swaps.length>=2)throw new guard.EntryEligibilityError('expired');};
+ f.strict.captureRollbackCash=async()=>({eth:.98,weth:0,blockNumber:41});f.strict.assertCleanupActive=()=>{if(stop==='operator')throw Error('operator stopped');};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>!(e instanceof guard.EntryRolledBackError)&&/unknown|operator/.test(e.message));
+ assert.equal(f.calls.sends.length,0);
+});
+
+test('funded workflow refreshes eligibility before approvals and mint instead of reusing discovery timestamp',async()=>{
+ const f=fixture();let completed=false,refreshed=false;
+ f.strict.fundingComplete=()=>{completed=true;};f.strict.refreshActive=async()=>{if(completed)refreshed=true;};
+ f.strict.assertActive=()=>{if(completed&&!refreshed)throw Error('stale after funding');};
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tokenId,'7');assert.equal(completed,true);assert.equal(refreshed,true);
 });
 test('confirmed mint cleanup still honors explicit settlement stop',async()=>{
  const f=fixture();f.strict.assertCleanupActive=()=>{throw Error('settlement stopped');};

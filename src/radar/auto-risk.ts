@@ -40,6 +40,7 @@ const entrySchema = z.object({
   noBroadcastEvidence:noBroadcastSchema.optional(),
   entryRecoveryEvidence:entryRecoverySchema.optional(),
   entryUnwindEvidence:entryUnwindSchema.optional(),
+  entryRollbackEvidence:z.object({basisUsd:positive,realizedNetUsd:z.number().finite(),blockNumber:z.number().int().positive(),receiptHashes:z.array(z.string().regex(/^0x[0-9a-f]{64}$/i)).min(1)}).strict().optional(),
   tokenId:z.string().optional(),basisUsd:positive.optional(),
   peakPct:z.number().finite().optional(),armed:z.boolean().default(false),
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
@@ -174,6 +175,15 @@ export class RiskStore {
   failEntry(id:string):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.id===id);if(!e)throw new Error('Unknown reservation');
     e.status='uncertain';this.setPause(s.session!,'Entry execution/basis uncertain; reconcile','uncertain');this.save(s);
+  }
+  /** Called under the entry lock only after confirmed rollback and restored inventory.
+   * Cash snapshots bracket purchases and refunds separately, each including gas. */
+  commitEntryRollback(id:string,proof:{basisUsd:number;realizedNetUsd:number;blockNumber:number;receiptHashes:string[]}):void {
+    const s=this.read(),r=s.session,e=r?.entries.find(x=>x.id===id);
+    if(!r||!e||e.status!=='reserved'||e.tokenId||e.basisUsd)throw Error('Entry rollback is not a pending reservation');
+    if(!Number.isFinite(proof.basisUsd)||proof.basisUsd<=0||!Number.isFinite(proof.realizedNetUsd)||!Number.isSafeInteger(proof.blockNumber)||proof.blockNumber<=0||!proof.receiptHashes.length||proof.receiptHashes.some(h=>!/^0x[0-9a-f]{64}$/i.test(h)))throw Error('Invalid entry rollback proof');
+    Object.assign(e,{status:'closed',basisUsd:proof.basisUsd,realizedNetUsd:proof.realizedNetUsd,closedAt:this.now(),closeReason:'ENTRY_ABORT',entryRollbackEvidence:proof});
+    this.setPause(r,'Entry eligibility expired; funding rolled back, awaiting fresh health checks','data');this.save(s);this.sessionLossCheck();
   }
   reconcileNeverBroadcast(id:string,input:z.infer<typeof noBroadcastSchema>):void {
     const proof=noBroadcastSchema.parse(input);

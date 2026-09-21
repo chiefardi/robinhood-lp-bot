@@ -5,7 +5,13 @@ import type { V4Pool } from '../chain/v4/discover.js';
 import { ethers } from 'ethers';
 import {holderFailure, type HolderEvidence} from './holder-coverage.js';
 
-export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void;assertCleanupActive?():void}
+/** Only a synchronous/readonly eligibility rejection, never an RPC send/receipt failure. */
+export class EntryEligibilityError extends Error {}
+/** Proven restoration of pre-entry token balances, before any mint broadcast. */
+export class EntryRolledBackError extends Error {
+  constructor(message:string,public readonly blockNumber:number,public readonly receiptHashes:string[],public readonly cashBeforeRollback:{eth:number;weth:number;blockNumber:number}){super(message);}
+}
+export interface StrictEntryBudget {fixedEntryPrice:number;sizeUsd:number;expectedPoolId:string;priceObservedAt:number;assertActive():void;assertCleanupActive?():void;refreshActive?():Promise<void>;fundingComplete?():void;receiptObserved?(blockNumber:number):void;captureRollbackCash?():Promise<{eth:number;weth:number;blockNumber:number}>}
 export function validateEntryBudget(pool:V4Pool,amountEth:string,o:StrictEntryBudget,now=Date.now()):void {
   o.assertActive();
   const key=pool.poolKey;

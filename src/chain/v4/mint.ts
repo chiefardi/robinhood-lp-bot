@@ -24,7 +24,7 @@ import { WETH_ABI } from "../abis.js";
 import { ethUsd } from "../price.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
-import { validateEntryBudget, strictMintAmounts, type StrictEntryBudget } from '../../radar/entry-guard.js';
+import { validateEntryBudget, strictMintAmounts, EntryEligibilityError, EntryRolledBackError, type StrictEntryBudget } from '../../radar/entry-guard.js';
 import {asymmetricBudget,asymmetricRange} from './asymmetric.js';
 
 const { Ether, Token, Percent, CurrencyAmount } = sdkCore as any;
@@ -64,7 +64,7 @@ const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // keep some native for t
  * native balance and the sim reverts with empty data ("missing revert data"). Unwrap the
  * shortfall WETH → ETH first so native covers the deposit + gas.
  */
-async function ensureNativeEth(needWei: bigint, assertActive?:()=>void): Promise<void> {
+async function ensureNativeEth(needWei: bigint, assertActive?:()=>void,receiptObserved?:(blockNumber:number)=>void): Promise<void> {
   const w = wallet();
   const bal = await provider.getBalance(w.address);
   if (bal >= needWei) return;
@@ -79,7 +79,8 @@ async function ensureNativeEth(needWei: bigint, assertActive?:()=>void): Promise
   log.info(`unwrap ${ethers.formatEther(short)} WETH → native ETH (v4 requires native ETH)`);
   const gas = await overrides();
   assertActive?.();
-  await waitTx(await weth.withdraw!(short, gas), "v4-unwrap");
+  const rc=await waitTx(await weth.withdraw!(short, gas), "v4-unwrap");
+  if(receiptObserved){if(!rc||rc.status!==1||!Number.isSafeInteger(rc.blockNumber)||rc.blockNumber<=0)throw Error('Unwrap receipt unavailable');receiptObserved(rc.blockNumber);}
 }
 
 function buildSdkPool(token: string, decimals: number, symbol: string, pool: V4Pool) {
@@ -411,17 +412,18 @@ export function balancedEthForHeldToken(token: string, meta: { decimals: number;
 }
 
 /** Approve an ERC20 for the v4 PositionManager via Permit2 (ERC20→Permit2, Permit2→POSM). */
-export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigint;assertActive():void}): Promise<void> {
+export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigint;assertActive():void;refreshActive?():Promise<void>;receiptObserved?(blockNumber:number):void}): Promise<void> {
+  const confirmed=(rc:ethers.TransactionReceipt|null)=>{if(strict?.receiptObserved){if(!rc||rc.status!==1||!Number.isSafeInteger(rc.blockNumber)||rc.blockNumber<=0)throw Error('Permit approval receipt unavailable');strict.receiptObserved(rc.blockNumber);}};
   const w = wallet();
   const erc = new ethers.Contract(tokenAddr, ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], w);
   if ((await erc.allowance!(w.address, PERMIT2)) < (strict?.amount ?? (1n << 200n))) {
-    const gas=await overrides();strict?.assertActive();
-    await waitTx(await erc.approve!(PERMIT2, strict?.amount ?? ethers.MaxUint256, gas), "v4-approve-permit2");
+    await strict?.refreshActive?.();const gas=await overrides();strict?.assertActive();
+    confirmed(await waitTx(await erc.approve!(PERMIT2, strict?.amount ?? ethers.MaxUint256, gas), "v4-approve-permit2"));
   }
   const permit2 = new ethers.Contract(PERMIT2, ["function approve(address token,address spender,uint160 amount,uint48 expiration)"], w);
   const exp = Math.floor(Date.now() / 1000) + 30 * 86400;
-  const gas=await overrides();strict?.assertActive();
-  await waitTx(await permit2.approve!(tokenAddr, C.v4PositionManager!, strict?.amount ?? (1n << 160n) - 1n, exp, gas), "v4-permit2");
+  await strict?.refreshActive?.();const gas=await overrides();strict?.assertActive();
+  confirmed(await waitTx(await permit2.approve!(tokenAddr, C.v4PositionManager!, strict?.amount ?? (1n << 160n) - 1n, exp, gas), "v4-permit2"));
 }
 
 /**
@@ -467,15 +469,18 @@ export async function openV4UsdgInRange(
     return strict ? await read : await read.catch(() => 0n);
   };
   const before = strict ? await Promise.all([bal(c0),bal(c1)]) : null;
-  await ensureNativeEth(total + NATIVE_GAS_BUFFER,strict?.assertActive);
+  let mintBroadcastPossible=false;
+  try {
+  await ensureNativeEth(total + NATIVE_GAS_BUFFER,strict?.assertActive,strict?.receiptObserved);
   let fundingBlock:number|undefined;
 
   // acquire each side from ETH via Kyber (best route across every DEX/tier/hook).
   let swapHash: string | undefined;
   const acquire = async (addr: string, ethAmt: bigint) => {
     if (ethAmt < ethers.parseEther("0.00002")) return;
+    await strict?.refreshActive?.();
     strict?.assertActive();
-    const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(addr), ethAmt, strict ? {assertActive:strict.assertActive} : undefined);
+    const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(addr), ethAmt, strict ? {assertActive:strict.assertActive,receiptObserved:strict.receiptObserved} : undefined);
     if (!k || k.amountOut <= 0n) throw new Error(`failed to buy ${addr.toLowerCase() === USDG.toLowerCase() ? "USDG" : "token"} via Kyber`);
     if (strict) {
       if(!Number.isSafeInteger(k.blockNumber)||k.blockNumber!<=0)throw new Error('strict funding receipt unavailable');
@@ -497,6 +502,7 @@ export async function openV4UsdgInRange(
   const buyUsdgWei = strict ? ethForUsdg : ethForUsdg > heldUsdgEthWei ? ethForUsdg - heldUsdgEthWei : 0n;
   await acquire(tokAddr, ethForTok);
   await acquire(usdgAddr, buyUsdgWei); // 0 if we already hold enough USDG → no swap
+  strict?.fundingComplete?.();
 
   let [bal0, bal1] = await Promise.all([bal(c0,fundingBlock), bal(c1,fundingBlock)]);
   if (strict && before) {
@@ -505,8 +511,9 @@ export async function openV4UsdgInRange(
   }
   if (bal0 <= 0n || bal1 <= 0n) throw new Error(`balance ${m0.symbol}/${m1.symbol} 0 after swap`);
 
-  await approveViaPermit2(c0,strict?{amount:bal0,assertActive:strict.assertActive}:undefined);
-  await approveViaPermit2(c1,strict?{amount:bal1,assertActive:strict.assertActive}:undefined);
+  await approveViaPermit2(c0,strict?{amount:bal0,assertActive:strict.assertActive,refreshActive:strict.refreshActive,receiptObserved:strict.receiptObserved}:undefined);
+  await approveViaPermit2(c1,strict?{amount:bal1,assertActive:strict.assertActive,refreshActive:strict.refreshActive,receiptObserved:strict.receiptObserved}:undefined);
+  await strict?.refreshActive?.();
 
   // RE-READ the pool AFTER the buys (they move the price, especially the thin token side) and
   // re-anchor the range on the FRESH tick. Building against the stale discovery price forced a big
@@ -567,6 +574,7 @@ export async function openV4UsdgInRange(
   }
   const gas=await overrides();
   strict?.assertActive();
+  mintBroadcastPossible=true;
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...gas });
   const rc = await waitTx(tx, "v4-mint");
   const tokenId = opts?.increaseTokenId ?? tokenIdFromReceipt(rc!);
@@ -608,6 +616,26 @@ export async function openV4UsdgInRange(
   } else await sweepLeftoverToEth([{ addr: c0, dec: m0.decimals }, { addr: c1, dec: m1.decimals }]).catch(() => undefined);
   log.info(`${opts?.increaseTokenId ? "increase" : "open"} v4 USDG in-range #${tokenId} ${m0.symbol}/${m1.symbol} fee ${pool.fee / 10000}% ${opts?.increaseTokenId ? "+" : ""}${amountEthStr}Ξ`);
   return { tokenId, txHash: tx.hash, swapHash, swappedPct: 100, fee: pool.fee, tickLower, tickUpper, depositEth: amountEthStr, poolId: pool.poolId, blockNumber:finalBlock,mode:opts?.asymmetric?'asymmetric':'inrange' };
+  } catch(error) {
+    // Only a known pre-send eligibility rejection is recoverable here. A send,
+    // receipt, balance-read, simulation or post-mint failure stays uncertain.
+    if(!strict||!before||mintBroadcastPossible||!(error instanceof EntryEligibilityError)||!strict.assertCleanupActive||!strict.captureRollbackCash)throw error;
+    const cashBeforeRollback=await strict.captureRollbackCash();
+    let block=0;const hashes:string[]=[];
+    for(const [addr,original] of [[c0,before[0]!],[c1,before[1]!]] as const){
+      const amount=(await bal(addr))-original;
+      if(amount<0n)throw Error('Entry rollback would consume pre-held inventory');
+      if(amount>0n){strict.assertCleanupActive();const result=await kyberSwap(addr,KYBER_NATIVE,amount,{assertActive:strict.assertCleanupActive});
+        if(!result||result.amountOut<=0n||!Number.isSafeInteger(result.blockNumber)||result.blockNumber!<=0)throw Error('Entry rollback receipt uncertain');
+        block=Math.max(block,result.blockNumber!);hashes.push(result.tx);
+      }
+      if(await bal(addr,block||undefined)!==original)throw Error('Entry rollback inventory mismatch');
+    }
+    // No swaps means there was no funded recovery to attest; retain the original
+    // error and conservative reservation rather than guessing a zero cash loss.
+    if(!block)throw error;
+    throw new EntryRolledBackError(error.message,block,hashes,cashBeforeRollback);
+  }
 }
 
 /**

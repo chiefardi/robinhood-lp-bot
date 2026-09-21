@@ -17,7 +17,8 @@ const pair=(id,at=now)=>({pairAddr:id,dexId:'uniswap',version:'v4',baseTokenAddr
 function qualifier(pools,dex){
  const deps={'../config.js':{cfg:{scan:limits}},'./v4/discover.js':{discoverV4Pools:async()=>[],discoverV4UsdgPools:async()=>pools},'./dexscreener.js':{dexPairs:async()=>dex},'../radar/entry-guard.js':{poolActivityFailure}};
  const code=ts.transpileModule(fs.readFileSync(new URL('../src/chain/candidate.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
- const api={};vm.runInNewContext(code,{exports:api,require(name){assert.ok(Object.hasOwn(deps,name),name);return deps[name]},Date});return api.qualifyCandidate;
+ class Clock extends Date{static now(){return now;}}
+ const api={};vm.runInNewContext(code,{exports:api,require(name){assert.ok(Object.hasOwn(deps,name),name);return deps[name]},Date:Clock});return api.qualifyCandidate;
 }
 test('same-token persistent pool survives full qualification and final dispatch despite higher h24 spike fees',async t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'qualification-history-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));

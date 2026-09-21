@@ -99,7 +99,9 @@ export async function qualifyCandidate(token: string, onRejected?: (reasons: Rec
     target.usd?(autoActivity?discoverV4UsdgPools(token,true):discoverV4UsdgPools(token).catch(() => [] as V4Pool[])):Promise.resolve([] as V4Pool[]),
     autoActivity?dexPairs(token, Date.now(),{strict:true}):dexPairs(token, Date.now()).catch(() => new Map<string, DexPair>()),
   ]);
-  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan, quoteFilter, autoActivity);
+  // Evaluate after awaited IO. Comparing a new observation to the caller's
+  // earlier clock falsely labels fresh data as future-dated. Never restamp data.
+  const result = evaluateCandidatePools([...eth, ...usd], dex, cfg.scan, quoteFilter, autoActivity?{...autoActivity,now:Date.now()}:undefined);
   if (!result.pool) onRejected?.(result.rejected);
   return result.pool;
 }
