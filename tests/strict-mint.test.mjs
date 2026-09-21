@@ -26,7 +26,7 @@ function fixture(flag={},poolInput=pool) {
     async balanceOf(_owner,opts){if(flag.balanceFail)throw new Error('balance failure');if(flag.cachedAfterMint&&minted&&opts?.blockTag==null)return this.address===USDG?originalUsd:originalToken;return holdings.get(this.address)??0n;}
     async allowance(){return ethers.MaxUint256;}
     async approve(...args){calls.approved.push(args);return {hash:'0xapprove'};}
-    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return flag.moveAfterFunding?{sqrtPriceX96:BigInt(Math.floor(2**96*1.0001**300.25)),tick:600,lpFee:30000}:{sqrtPriceX96:pool.sqrtPriceX96,tick:0,lpFee:30000};}
+    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return flag.moveAfterFunding?{sqrtPriceX96:BigInt(Math.floor(2**96*1.0001**300.25)),tick:600,lpFee:pool.lpFee}:{sqrtPriceX96:pool.sqrtPriceX96,tick:0,lpFee:pool.lpFee};}
     async getLiquidity(){return pool.liquidity;}
   }
   const P=sdkV4.Position;
@@ -66,6 +66,13 @@ function fixture(flag={},poolInput=pool) {
   const strict={fixedEntryPrice:2000,sizeUsd:30,priceObservedAt:Date.now(),expectedPoolId:pool.poolId,assertActive:()=>{if(flag.paused)throw new Error('paused');}};
   return {api,calls,holdings,originalToken,originalUsd,strict};
 }
+
+for(const fee of [10000,19000,20000,30000,50000,9999,50001])test(`strict asymmetric actual mint fee boundary ${fee}`,async()=>{
+ const key={...pk,fee};const p={...pool,poolKey:key,fee,lpFee:fee,poolId:ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(key)))};
+ const f=fixture({},p);
+ if(fee<10000||fee>50000){await assert.rejects(f.api.openV4UsdgInRange(p,'0.015',{strict:f.strict,asymmetric:true}),/invalid strict pool/);assert.equal(f.calls.swaps.length,0);assert.equal(f.calls.sends.length,0);}
+ else {const r=await f.api.openV4UsdgInRange(p,'0.015',{strict:f.strict,asymmetric:true});assert.equal(r.tokenId,'7');assert.equal(f.calls.sends.length,1);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);}
+});
 
 test('asymmetric mint buys the tick-derived token share and reanchors -20/+10 after funding',async()=>{
  const f=fixture({moveAfterFunding:true});

@@ -11,7 +11,7 @@ export function validateEntryBudget(pool:V4Pool,amountEth:string,o:StrictEntryBu
   const key=pool.poolKey;
   const id=ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],[key.currency0,key.currency1,key.fee,key.tickSpacing,key.hooks]));
   if (pool.quote !== 'usd' || ![key.currency0,key.currency1].some(a=>a.toLowerCase()==='0x5fc5360d0400a0fd4f2af552add042d716f1d168') || key.hooks !== ethers.ZeroAddress || id.toLowerCase()!==pool.poolId.toLowerCase() || id.toLowerCase()!==o.expectedPoolId.toLowerCase()) throw new Error('strict pool identity mismatch');
-  if (pool.liquidity<=0n || pool.sqrtPriceX96<=0n || !Number.isInteger(pool.tick) || pool.lpFee!==key.fee || pool.fee!==key.fee || pool.tickSpacing!==key.tickSpacing || key.fee<30000 || key.fee>50000) throw new Error('invalid strict pool');
+  if (pool.liquidity<=0n || pool.sqrtPriceX96<=0n || !Number.isInteger(pool.tick) || pool.lpFee!==key.fee || pool.fee!==key.fee || pool.tickSpacing!==key.tickSpacing || key.fee<10000 || key.fee>50000) throw new Error('invalid strict pool');
   if (!Number.isFinite(o.fixedEntryPrice) || o.fixedEntryPrice<=0 || !Number.isFinite(o.sizeUsd) || o.sizeUsd<=0 || o.sizeUsd>30 || !Number.isFinite(o.priceObservedAt) || o.priceObservedAt<=0 || now<o.priceObservedAt || now-o.priceObservedAt>60_000) throw new Error('invalid/stale entry budget');
   const wei=ethers.parseEther(amountEth);
   if (wei<=0n || Number(ethers.formatEther(wei))*o.fixedEntryPrice>o.sizeUsd+1e-8) throw new Error('entry exceeds reserved budget');

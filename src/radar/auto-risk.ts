@@ -13,12 +13,23 @@ const positive = z.number().finite().positive();
 const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION','TIME_TP','MAX_HOLD']);
 export type RiskReason = z.infer<typeof reasonSchema>;
 // Operator-only proof for a pristine wallet. This cannot clear an attempted broadcast.
-const noBroadcastSchema = z.object({
+const pristineNoBroadcastSchema = z.object({
   chainId:z.literal(4663),wallet:z.string().regex(/^0x[0-9a-f]{40}$/i),
   blockNumber:z.number().int().positive(),blockHash:z.string().regex(/^0x[0-9a-f]{64}$/i),observedAt:positive,
   latestNonce:z.literal(0),pendingNonce:z.literal(0),nativeWei:z.string().regex(/^\d+$/),expectedNativeWei:z.string().regex(/^\d+$/),
   wethWei:z.literal('0'),usdgRaw:z.literal('0'),v3Count:z.literal(0),v4Count:z.literal(0),reason:z.string().min(10),
 }).strict().refine(e=>BigInt(e.nativeWei)===BigInt(e.expectedNativeWei)&&BigInt(e.nativeWei)>0n,'Initial funding balance changed');
+// Operator-only reconciliation: a reviewed synchronous guard threw before wallet
+// access, corroborated by unchanged nonce since a recorded pre-attempt observation.
+// Never use this for swap/RPC timeouts or an attempted transaction broadcast.
+const rejectedNoBroadcastSchema=z.object({
+  kind:z.literal('pre-broadcast-guard'),chainId:z.literal(4663),wallet:z.string().regex(/^0x[0-9a-f]{40}$/i),
+  beforeObservedAt:positive,observedAt:positive,beforeNonce:z.number().int().nonnegative(),
+  latestNonce:z.number().int().nonnegative(),pendingNonce:z.number().int().nonnegative(),
+  blockNumber:z.number().int().positive(),blockHash:z.string().regex(/^0x[0-9a-f]{64}$/i),
+  runtimeCommit:z.string().regex(/^[0-9a-f]{40}$/),reason:z.literal('invalid strict pool'),
+}).strict().refine(e=>e.beforeNonce===e.latestNonce&&e.latestNonce===e.pendingNonce,'Wallet nonce changed');
+const noBroadcastSchema=z.union([pristineNoBroadcastSchema,rejectedNoBroadcastSchema]);
 const entrySchema = z.object({
   id:z.string(),token:z.string(),sizeUsd:positive,sizeEth:positive,at:positive,
   status:z.enum(['reserved','open','closing','closed','uncertain','aborted']),
@@ -164,6 +175,7 @@ export class RiskStore {
     const s=this.read(),r=s.session,e=r?.entries.find(x=>x.id===id);
     if(!r||!r.paused||!e||!['reserved','uncertain'].includes(e.status)||e.tokenId||e.basisUsd||e.closeReason)
       throw new Error('Only an unresolved never-broadcast entry can be reconciled');
+    if('kind' in proof&&(proof.beforeObservedAt>=e.at||proof.observedAt<e.at))throw new Error('Nonce evidence does not bracket the attempt');
     e.status='aborted';e.noBroadcastEvidence=proof;
     this.setPause(r,'Never-broadcast attempt reconciled; entries remain paused','manual');this.save(s);
   }

@@ -146,7 +146,7 @@ async function registerCommands(): Promise<void> {
       { command: "watch", description: "👁 Volume-spike monitor" },
       { command: "scan", description: "🔍 Check volume spikes now" },
       { command: "screen", description: "🧪 Screening GMGN 24h (mcap>500k, vol>1M, no flap)" },
-      { command: "hunt", description: "🎯 LP candidate hunter (3-5% fees + activity + screening)" },
+      { command: "hunt", description: "🎯 LP candidate hunter (configured fees + activity + screening)" },
       { command: "card", description: "📸 Shareable profit card (portfolio)" },
       { command: "calendar", description: "📅 Profit calendar (daily PnL)" },
       { command: "swap", description: "🔄 Swap tokens via KyberSwap (best route)" },

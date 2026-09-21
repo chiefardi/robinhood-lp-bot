@@ -1516,7 +1516,7 @@ export async function onHunt(arg?: string): Promise<void> {
     cfg.scan.enabled = true;
     persist();
     startScan();
-    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (3-5% fees + active trading + passed screening).`);
+    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (${cfg.scan.feeMinPpm/10000}-${cfg.scan.feeMaxPpm/10000}% fees + active trading + passed screening).`);
     return;
   }
   if (a === "off") {
@@ -1531,7 +1531,7 @@ export async function onHunt(arg?: string): Promise<void> {
     const mid = m?.result?.message_id;
     try {
       const r = await scanNow();
-      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (3-5% fees + active trading + screening).${r.found ? " Alerts sent ↑" : " No candidates passed this time."}`);
+      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (${cfg.scan.feeMinPpm/10000}-${cfg.scan.feeMaxPpm/10000}% fees + active trading + screening).${r.found ? " Alerts sent ↑" : " No candidates passed this time."}`);
     } catch (e) {
       await edit(mid, `❌ Scan failed: ${short(e, 100)}`);
     }

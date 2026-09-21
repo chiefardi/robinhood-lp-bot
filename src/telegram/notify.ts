@@ -131,7 +131,7 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
   await send(
     [
       `🎯 <b>LP CANDIDATE</b> · ${tokenEmoji(t.symbol)} <b>${esc(t.symbol)}</b> ${verd}`,
-      `<i>passed screening + active transactions + 3-5% pool fee</i>`,
+      `<i>initial screening passed; final auto-entry checks still apply</i>`,
       pre(T.join("\n")),
       r.thesis ? `🧠 <i>${esc(r.thesis)}</i>` : "",
       r.flags.length ? `🚩 ${esc(r.flags.slice(0, 4).join(" · "))}` : "",
