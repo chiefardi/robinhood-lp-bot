@@ -51,3 +51,11 @@ test('auto off while quoting prevents a new close intent or send',async(t)=>{
   await runRiskCycle(s,{tpPct:10,slPct:10,trailActivationPct:0,trailGivebackPct:5},{quote:async()=>{enabled=false;return {netUsd:36,observedAt:now,blockNumber:1}},isEnabled:()=>enabled,acquire:()=>true,release:()=>{},settle:async()=>{calls++;return 34},notify:()=>{},warn:()=>{}});
   assert.equal(calls,0);assert.equal(s.openPositions()[0].status,'open');
 });
+
+test('close notice uses final pre-close quote rather than initial trigger value',async t=>{
+ const {runRiskCycle}=await import('../src/radar/risk-manager.ts');const {RiskStore}=await import('../src/radar/auto-risk.ts');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'risk-final-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const now=Date.now(),s=new RiskStore(path.join(dir,'state.json'),()=>now);s.startSession();s.resumeEntries();s.commitEntry(s.reserveEntry({token:'a',sizeUsd:30,sizeEth:.01}),{tokenId:'1',basisUsd:30});
+ let count=0,notice;await runRiskCycle(s,{tpPct:10,slPct:10,trailActivationPct:0,trailGivebackPct:5},{quote:async()=>({netUsd:++count===1?36:33,observedAt:now,blockNumber:count}),acquire:()=>true,release:()=>{},settle:async()=>32,notify:n=>notice=n,warn:()=>{}});
+ assert.ok(Math.abs(notice.estimatedPnlPct-10)<1e-9);assert.equal(notice.estimateDifferenceUsd,-1);
+});

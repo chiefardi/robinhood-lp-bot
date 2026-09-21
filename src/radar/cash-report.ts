@@ -1,9 +1,28 @@
 import {RiskStore,riskStore} from './auto-risk.js';
 import {esc} from '../telegram/format.js';
+import {productivityLines} from './range-productivity.js';
 
 type State=ReturnType<RiskStore['reportingSnapshot']>;
 type Entry=NonNullable<State['session']>['entries'][number];
 const money=(n:number|null)=>n==null?'unavailable':`${n<0?'-':'+'}$${Math.abs(n).toFixed(2)}`;
+/** Report HTML tags are self-contained per line; preserve lines across Telegram chunks. */
+export function reportChunks(text:string):string[] {
+ const chunks:string[]=[];let current='';
+ for(const line of text.split('\n')){
+  if(current.length&&current.length+line.length+1>3900){chunks.push(current);current='';}
+  current+=(current?'\n':'')+line;
+ }
+ if(current)chunks.push(current);return chunks;
+}
+export function positionObservationLines(e:Entry,now=Date.now()):string[] {
+ const v=e.valuation,age=e.markAt==null?null:Math.max(0,Math.floor((now-e.markAt)/1000));
+ return [
+  v?`Exit value: expected $${v.expectedNetUsd.toFixed(2)} vs buffered $${e.markUsd!.toFixed(2)}; slippage haircut $${v.slippageHaircutUsd.toFixed(2)}, same gas reserve $${v.gasReserveUsd.toFixed(2)}. Observation ${age}s old (${age!=null&&age<=60?'fresh':'stale'}), block ${e.blockNumber}.`:'Expected/buffered breakdown unavailable for this historical observation.',
+  ...(v?v.assets.map(a=>`${a.symbol} (${a.address}, ${a.decimals} decimals): principal ${a.principalRaw}, accrued fees ${a.feesRaw} raw units${a.indicativeFeeUsd==null?'':`; indicative fees $${a.indicativeFeeUsd.toFixed(4)} at full-size route average (not fee-only executable or realized)`}.`):[]),
+  ...(e.status==='closed'&&e.realizedNetUsd!=null?[`Actual net settlement $${e.realizedNetUsd.toFixed(2)}; difference vs last buffered estimate ${money(e.markUsd==null?null:e.realizedNetUsd-e.markUsd)}.`]:[]),
+  ...productivityLines(e.productivity,e.status==='closed'?(e.closedAt??e.markAt??now):now),
+ ];
+}
 function totals(entries:Entry[]){
  const closed=entries.filter(e=>e.status==='closed');
  const known=closed.filter(e=>e.basisUsd!=null&&e.realizedNetUsd!=null);
@@ -26,7 +45,7 @@ export function summarizeCash(state:State,now=Date.now()){
  return {now,sessionId:state.session?.id,paused:state.session?.paused,pauseReason:state.session?.pauseReason,
   lifetime:totals(entries),session:totals(state.session?.entries??[]),day,undated,dayEntries,
   recent:[...closed].sort((a,b)=>(b.closedAt??b.at)-(a.closedAt??a.at)).slice(0,10),
-  open:{count:open.length,freshCount:fresh.length,valueUsd:fresh.length===open.length?fresh.reduce((n,e)=>n+e.markUsd!,0):null,
+  open:{entries:open,count:open.length,freshCount:fresh.length,valueUsd:fresh.length===open.length?fresh.reduce((n,e)=>n+e.markUsd!,0):null,
    pnlUsd:fresh.length===open.length?fresh.reduce((n,e)=>n+e.markUsd!-e.basisUsd!,0):null},
  };
 }
@@ -42,10 +61,12 @@ export function renderCashReport(r:ReturnType<typeof summarizeCash>,kind:'pnl'|'
   `<b>Current session realized:</b> ${money(r.session.pnlUsd)}`,
   `<b>Open/unresolved:</b> ${r.open.count} · estimated net liquidation value ${money(r.open.valueUsd)} · unrealized ${money(r.open.pnlUsd)}`,
   ...(r.open.freshCount<r.open.count?['Open valuation unavailable or stale; not reported as $0.']:[]),
+  ...r.open.entries.flatMap(e=>[`#${esc(e.tokenId??'pending')}:`,...positionObservationLines(e,r.now).map(esc)]),
   'Fee breakdown: unavailable separately; collected fees and execution costs are included in net cash settlement.',
   `Entries: ${r.paused?'PAUSED — '+esc(r.pauseReason??'reason unavailable'):'not paused (screening and risk gates still apply)'}`,
   '',`<b>${kind==='briefing'?'CLOSED IN LAST 24 HOURS':'RECENT CLOSED POSITIONS'}</b>`,
   ...(rows.length?rows.map(e=>`#${esc(e.tokenId??'?')} · ${esc(e.token.slice(0,10))}… · ${esc(e.closeReason??'unknown reason')} · ${money(e.basisUsd!=null&&e.realizedNetUsd!=null?e.realizedNetUsd-e.basisUsd:null)}${e.closedAt?' · '+new Date(e.closedAt+7*3_600_000).toISOString().slice(0,16).replace('T',' ')+' WIB':' · close time unverified'}`):[r.undated?'No dated closes available; historical coverage is incomplete.':'None.']),
+  ...rows.filter(e=>e.valuation).flatMap(e=>[`#${esc(e.tokenId??'?')} observation:`,...positionObservationLines(e,r.now).map(esc)]),
   ...(kind==='briefing'?[`Rule-based summary: ${r.open.count} open/unresolved; ${r.paused?'new entries paused':'new entries subject to screening'}. No strategy recommendation inferred from this small sample.`]:[]),
   'USD cash basis is fixed at entry and settlement. Unrelated wallet flows/manual LPs are excluded. Quotes are estimates, not guaranteed fills.',
  ].join('\n');

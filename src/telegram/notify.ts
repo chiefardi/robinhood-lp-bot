@@ -10,6 +10,7 @@ import type { NewTokenAlert, OutOfRangeAlert } from "../feed/monitor.js";
 import type { ScreenResult } from "../radar/screen.js";
 import type { QualifiedPool } from "../chain/candidate.js";
 import type { AutoCloseInfo, RebalanceInfo, CompoundInfo } from "../radar/automanage.js";
+import {formatActivityCoverage} from '../radar/fast-hunt.js';
 
 /** One alert for a newly uncertain reservation, not for ordinary screening rejections. */
 export async function notifyAutoLpFailure(r:AutoLpResult):Promise<void> {
@@ -124,7 +125,8 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
     `${padR("liq pool", 9)} $${(pool.liqUsd / 1000).toFixed(1)}k`,
     `${padR("mcap", 9)} ${fmtMcap(t.marketCap)} · turnover ${turnover}`,
     `${padR("type", 9)} ${r.kind} · community ${r.community}`,
-    `${padR("score", 9)} ${r.score}/100 · FOMO ${r.fomo}/100`,
+    `${padR("pool m5",9)} ${pool.vol5m==null?'unknown':'$'+pool.vol5m.toFixed(0)} · h1 ${pool.volH1==null?'unknown':'$'+pool.volH1.toFixed(0)}`,
+    formatActivityCoverage(pool.activity),
   ];
   await send(
     [
@@ -178,7 +180,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
     [
       `${emo} <b>AUTO-CLOSE · ${label}</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId} [${i.version}]`,
       `${i.realizedPnlUsd!=null?'Realized cash PnL':'PnL'}: <b>${pnl}${i.realizedPnlUsd!=null?` ($${i.realizedPnlUsd.toFixed(2)})`:''}</b>`,
-      i.realizedPnlUsd!=null?`Trigger estimate: ${i.estimatedPnlPct?.toFixed(2)??'?'}%. Session accounting: /auto status (separate from legacy LP-versus-HODL ledger).`:`<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
+      i.realizedPnlUsd!=null?`Final pre-close buffered estimate: ${i.estimatedPnlPct?.toFixed(2)??'?'}%. Settlement minus estimate: ${i.estimateDifferenceUsd==null?'unavailable':'$'+i.estimateDifferenceUsd.toFixed(2)}. Session accounting: /auto status (separate from legacy LP-versus-HODL ledger).`:`<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
 }

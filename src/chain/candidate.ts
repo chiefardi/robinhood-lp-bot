@@ -7,6 +7,7 @@ import { cfg } from "../config.js";
 import { discoverV4Pools, discoverV4UsdgPools, type V4Pool } from "./v4/discover.js";
 import { dexPairs, type DexPair } from "./dexscreener.js";
 import { poolActivityFailure } from "../radar/entry-guard.js";
+import type {ActivityCoverage} from '../radar/fast-hunt.js';
 
 export interface AutoPoolActivity {minVol5m:number;minVol1h:number;now:number}
 export function discoveryTargetsForQuote(quoteFilter?:"eth"|"usd"):{eth:boolean;usd:boolean} {
@@ -14,6 +15,7 @@ export function discoveryTargetsForQuote(quoteFilter?:"eth"|"usd"):{eth:boolean;
 }
 
 export interface QualifiedPool {
+  activity?:ActivityCoverage;
   v4: V4Pool;
   fee: number;
   quote: "eth" | "usd";

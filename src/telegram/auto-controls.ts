@@ -1,5 +1,6 @@
 import { RiskStore, PILOT_LIMITS, validateExitSettings, type ExitSettings } from '../radar/auto-risk.js';
-import {summarizeCash} from '../radar/cash-report.js';
+import {summarizeCash,positionObservationLines,reportChunks} from '../radar/cash-report.js';
+import {esc} from './format.js';
 interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number}
 interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean;checkFunding:()=>Promise<void>}
 function ready(a:AutoSettings):void {
@@ -32,9 +33,12 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     }
     if(cmd==='resume'){
       ready(a);if(!a.enabled)throw new Error('Start exit monitoring with /auto on first');
+      const before=d.store.snapshot();
       await d.checkFunding();
       if(d.walletBusy())throw new Error('Wallet operation started during funding check');
       ready(a);if(!a.enabled)throw new Error('Monitoring stopped during funding check');
+      const after=d.store.snapshot();
+      if(before?.id!==after?.id||before?.pauseRevision!==after?.pauseRevision)throw new Error('Pause changed during funding check; explicit resume required');
       d.store.resumeEntries();a.entryPaused=false;d.persist();
       await d.send('Entries RESUMED, subject to persistent session caps, mandatory GMGN checks and exact-pool verification. Real funds may be spent.');return;
     }
@@ -73,8 +77,10 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
       'Both timers apply only while trailing is not active and armed. Armed winners keep running; SL and session-loss protection remain active.',
       `Realized session cash PnL: ${realized==null?'unavailable':'$'+realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
       ...(s?.pauseReason?[`Pause: ${s.pauseReason}`]:[]),
+      `Pause classification: ${s?.pauseKind??'legacy/unclassified (manual resume only)'}; revision ${s?.pauseRevision??'legacy'}. ${d.store.recoveryStatus()}`,
       ...[...occupied,...entries.filter(e=>!occupied.includes(e)).slice(-5)].map(e=>[
         `#${e.tokenId??'pending'} ${e.status}: basis ${e.basisUsd==null?'unknown':'$'+e.basisUsd.toFixed(2)}, peak ${e.peakPct==null?'unknown':e.peakPct.toFixed(2)+'%'}, ${e.closeReason??'no exit latched'}`,
+        ...positionObservationLines(e),
         ...(e.status==='open'?[
           `Trailing ${e.armed&&a.trailActivationPct>0?'ARMED; exit at '+((e.peakPct??0)-a.trailGivebackPct).toFixed(2)+'% net':'not armed'}.`,
           ...(e.armed&&a.trailActivationPct>0?['Timers bypassed: trailing manages this winner; any previously latched exit remains binding.']:[
@@ -87,6 +93,6 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
       '/auto session · /auto trail 10 5 · /auto sl 10 · /auto on · /auto resume · /auto pause · /auto off',
       'Timed exits require fresh quotes; deadlines are not guaranteed fills. No automatic re-range or compounding. Unknown executions require reconciliation.',
     ];
-    await d.send(lines.join('\n'));
+    for(const chunk of reportChunks(lines.map(esc).join('\n')))await d.send(chunk);
   }catch(e:any){await d.send(`Auto unchanged or paused: ${String(e?.message??e).replace(/[<>&]/g,'')}`);}
 }

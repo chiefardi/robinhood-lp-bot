@@ -20,7 +20,7 @@ import { ethers } from "ethers";
 import { esc, pre, padR, padL, sg, money, tokenEmoji } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
-import {buildCashReport} from '../radar/cash-report.js';
+import {buildCashReport,reportChunks} from '../radar/cash-report.js';
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 
 const log = logger("handlers");
@@ -1649,7 +1649,7 @@ export async function onBriefing(): Promise<void> {
 }
 
 export async function onPnl(): Promise<void> {
-  try { await sendMenu(buildCashReport('pnl')); }
+  try { for(const chunk of reportChunks(buildCashReport('pnl')))await sendMenu(chunk); }
   catch { await send('Cash PnL unavailable: risk ledger unreadable or invalid. No zero balance inferred; inspect /auto status.'); }
 }
 

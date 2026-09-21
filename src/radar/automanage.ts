@@ -8,6 +8,7 @@ import { acquireWallet, releaseWallet, walletBusy } from "../chain/txlock.js";
 import { logger } from "../util/log.js";
 import { riskStore } from "./auto-risk.js";
 import { runRiskCycle } from "./risk-manager.js";
+import {pilotRecoveryHealth} from './recovery-health.js';
 
 const log = logger("automanage");
 
@@ -22,6 +23,7 @@ export interface AutoCloseInfo {
   pnlEth: number | null;
   realizedPnlUsd?: number;
   estimatedPnlPct?: number | null;
+  estimateDifferenceUsd?:number;
 }
 export interface RebalanceInfo {
   oldTokenId: string;
@@ -95,6 +97,7 @@ async function tick(): Promise<void> {
     stats.runs++;stats.lastAt=Date.now();
     await runRiskCycle(riskStore,cfg.autoLp,{
       isEnabled:()=>cfg.autoLp.enabled,
+      entriesPaused:()=>cfg.autoLp.entryPaused,recoveryHealth:()=>pilotRecoveryHealth(riskStore),
       quote:quoteV4Exit,acquire:acquireWallet,release:releaseWallet,
       settle:async(id,reason)=>{
         const price=await freshEntryPrice();
@@ -106,7 +109,7 @@ async function tick(): Promise<void> {
         if(after.usdg!==before.usdg)throw new Error('Unsettled USDG balance changed; cash PnL unknown');
         return ((after.eth+after.weth)-(before.eth+before.weth))*price.usd;
       },
-      notify:i=>{stats.closed++;hooks?.onAutoClose({tokenId:i.tokenId,sym:i.token,version:'v4',reason:i.reason,pnlPct:i.realizedPnlPct,pnlEth:null,realizedPnlUsd:i.realizedPnlUsd,estimatedPnlPct:i.estimatedPnlPct});},
+      notify:i=>{stats.closed++;hooks?.onAutoClose({tokenId:i.tokenId,sym:i.token,version:'v4',reason:i.reason,pnlPct:i.realizedPnlPct,pnlEth:null,realizedPnlUsd:i.realizedPnlUsd,estimatedPnlPct:i.estimatedPnlPct,estimateDifferenceUsd:i.estimateDifferenceUsd});},
       warn:riskWarning,
     });
   } catch (e) {

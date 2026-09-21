@@ -25,3 +25,10 @@ test('changing protection pauses entries and cannot silently continue without a 
   await riskAutoCommand('sl 0',a,d);assert.equal(a.entryPaused,true);assert.equal(s.entryAllowed(),false);
   await riskAutoCommand('resume',a,d);assert.equal(a.entryPaused,true);
 });
+test('later operator pause defeats a resume awaiting funding in the same session',async t=>{
+ const {riskAutoCommand}=await import('../src/telegram/auto-controls.ts');const {RiskStore}=await import('../src/radar/auto-risk.ts');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'resume-race-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const s=new RiskStore(path.join(dir,'risk.json'));s.startSession();
+ const a={enabled:true,entryPaused:true,sizeUsd:29,tpPct:10,slPct:10,trailActivationPct:0,trailGivebackPct:5,compound:false,oorAction:'close',closeOor:false,volFadeX:0,minFeePerHourUsd:0,manageSec:90};
+ const d={store:s,persist:()=>{},start:()=>{},stop:()=>{},send:async()=>{},walletBusy:()=>false,checkFunding:async()=>{await riskAutoCommand('pause',a,d)}};
+ await riskAutoCommand('resume',a,d);assert.equal(s.snapshot().paused,true);assert.equal(a.entryPaused,true);
+});

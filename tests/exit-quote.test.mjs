@@ -74,6 +74,14 @@ test('principal plus accrued fees become net estimated ETH cash, not a USD-symbo
   assert.equal(result.observedAt, NOW - 1000);
   assert.equal(result.blockNumber, 123);
   assert.equal(f.sold.length, 1);
+  assert.ok(Math.abs(result.expectedNetUsd - 2025.7407099118216) < 1e-9);
+  assert.ok(Math.abs(result.slippageHaircutUsd - 1) < 1e-9);
+  assert.equal(result.gasReserveUsd,0.25);
+  assert.equal(result.inRange,true);
+  assert.equal(result.tokenId,'42');
+  assert.equal(result.assets[0].principalRaw,'2995354955910780');
+  assert.equal(result.assets[0].feesRaw,'1000000000000000000');
+  assert.equal(result.assets[1].feesRaw,'2000000000000000000');
 });
 
 for (const [label, options] of [
@@ -118,6 +126,12 @@ test('WETH is valued directly without a swap haircut; USD-like names are not tru
   const result = await exit.createV4ExitQuoter(f.deps)('42');
   assert.ok(Math.abs(result.netUsd - 6011.731419823643) < 1e-9);
   assert.equal(f.sold.length, 0);
+});
+test('pinned current tick includes lower boundary and excludes upper boundary',async()=>{
+ for(const [info,want] of [[60n<<32n,true],[BigInt(0x1000000-60)<<8n,false]]){
+  const key={currency0:ZERO,currency1:WETH,fee:3000n,tickSpacing:60n,hooks:ZERO};
+  const q=await exit.createV4ExitQuoter(fixture({values:{getPoolAndPositionInfo:[key,info]}}).deps)('42');assert.equal(q.inRange,want);
+ }
 });
 
 test('untrusted token/token pair sells both full amounts, never uses the pool spot ratio', async () => {

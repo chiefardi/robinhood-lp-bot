@@ -7,6 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { dataPath } from '../util/files.js';
+import {valuationSchema,productivitySchema,sampleProductivity,type Valuation} from './range-productivity.js';
 
 const positive = z.number().finite().positive();
 const reasonSchema = z.enum(['TP','SL','TRAIL','SESSION','TIME_TP','MAX_HOLD']);
@@ -26,19 +27,24 @@ const entrySchema = z.object({
   peakPct:z.number().finite().optional(),armed:z.boolean().default(false),
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
   blockNumber:z.number().int().nonnegative().optional(),
+  // Additive diagnostics cannot make a valid financial ledger unreadable.
+  valuation:valuationSchema.optional().catch(undefined),productivity:productivitySchema.optional().catch(undefined),
+  observationStatus:z.enum(['available','invalid','unavailable']).optional(),
+  observedPoolId:z.string().regex(/^0x[0-9a-f]{64}$/).optional(),
   closeReason:reasonSchema.optional(),realizedNetUsd:z.number().finite().optional(),
   closedAt:positive.optional(),
   closeTimeEvidence:z.object({txHash:z.string().regex(/^0x[0-9a-f]{64}$/i),blockNumber:z.number().int().positive()}).strict().optional(),
 }).strict().refine(e=>e.status!=='aborted'||(!!e.noBroadcastEvidence&&!e.tokenId&&!e.basisUsd&&!e.closeReason),'Invalid aborted attempt');
 const sessionSchema = z.object({
   id:z.string(),startedAt:positive,paused:z.boolean(),pauseReason:z.string(),lossTriggered:z.boolean(),
+  pauseKind:z.enum(['manual','data','uncertain','configuration','loss','initial']).optional(),pauseRevision:z.number().int().nonnegative().optional(),
   entries:z.array(entrySchema),
 }).strict();
 const stateSchema = z.object({version:z.literal(1),session:sessionSchema.nullable(),history:z.array(sessionSchema)}).strict();
 type State=z.infer<typeof stateSchema>;
 type Entry=z.infer<typeof entrySchema>;
 export interface ExitSettings {tpPct:number;slPct:number;trailActivationPct:number;trailGivebackPct:number;timedTpMin?:number;timedTpPct?:number;maxHoldMin?:number}
-export interface ExitSnapshot {netUsd:number;observedAt:number;blockNumber:number}
+export interface ExitSnapshot extends Partial<Valuation> {netUsd:number;observedAt:number;blockNumber:number}
 export const PILOT_LIMITS = Object.freeze({maxOpen:3,outstandingUsd:90,lossUsd:15});
 const occupiesSlot = (e:Entry) => e.status !== 'closed' && e.status !== 'aborted';
 const outstandingBasis = (entries:Entry[]) => entries.filter(occupiesSlot).reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
@@ -50,6 +56,9 @@ export function validateExitSettings(s:ExitSettings):void {
 }
 
 export class RiskStore {
+  private readonly runId=randomUUID();
+  private recovery:{sessionId:string;revision:number;first:number;last:number;count:number}|null=null;
+  private recoveryMessage='No recovery samples since startup';
   constructor(private file:string,private now:()=>number=Date.now) {}
   private read():State {
     try { return stateSchema.parse(JSON.parse(fs.readFileSync(this.file,'utf8'))); }
@@ -79,18 +88,43 @@ export class RiskStore {
     const s=this.read();
     if(s.session?.entries.some(e=>e.status!=='closed')) throw new Error('Session has unresolved entries; reconcile first');
     if(s.session) s.history.push(s.session);
-    s.session={id:randomUUID(),startedAt:this.now(),paused:true,pauseReason:'New session: entries paused',lossTriggered:false,entries:[]};
+    s.session={id:randomUUID(),startedAt:this.now(),paused:true,pauseReason:'New session: entries paused',pauseKind:'initial',pauseRevision:1,lossTriggered:false,entries:[]};
     this.save(s);
   }
   pauseEntries(reason='Operator pause'):void {
     const s=this.read();if(!s.session)return;
-    s.session.paused=true;s.session.pauseReason=reason;this.save(s);
+    this.setPause(s.session,reason,'manual');this.save(s);
+  }
+  private setPause(r:NonNullable<State['session']>,reason:string,kind:NonNullable<NonNullable<State['session']>['pauseKind']>):void {
+    // Transient outages never replace a stronger pause or invent legacy permission.
+    if(kind!=='manual'&&r.paused&&r.pauseKind!=='data')return;
+    if(!(kind==='data'&&r.paused&&r.pauseKind==='data')){r.pauseRevision=(r.pauseRevision??0)+1;this.resetRecovery('Pause revision changed');}
+    r.paused=true;r.pauseReason=reason;r.pauseKind=kind;
+  }
+  pauseDataEntries(reason:string):void {const s=this.read();if(!s.session)return;this.setPause(s.session,reason,'data');this.save(s);}
+  resetRecovery(reason:string):void {this.recovery=null;this.recoveryMessage=reason;}
+  recoveryStatus():string{return this.recoveryMessage;}
+  /** Called only by the risk cycle under wallet lock after read-only health checks. */
+  sampleRecovery(expected:{id:string;pauseRevision?:number},observedAt:number):boolean {
+    const s=this.read(),r=s.session,now=this.now();
+    if(!r||r.id!==expected.id||!Number.isSafeInteger(r.pauseRevision)||r.pauseRevision!==expected.pauseRevision||!r.paused||r.pauseKind!=='data'||r.lossTriggered||
+      r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)||(e.status!=='closed'&&!!e.closeReason))||
+      !Number.isFinite(observedAt)||observedAt>now||now-observedAt>60_000||
+      r.entries.some(e=>e.status==='open'&&(e.markAt==null||e.markAt>now||now-e.markAt>60_000))){this.resetRecovery('Recovery blocked: pause changed, execution unresolved or health stale');return false;}
+    let streak=this.recovery;
+    if(!streak||streak.sessionId!==r.id||streak.revision!==r.pauseRevision||now-streak.last>90_000||now<streak.last)
+      streak=this.recovery={sessionId:r.id,revision:r.pauseRevision!,first:now,last:now,count:1};
+    else if(now-streak.last>=20_000){streak.last=now;streak.count++;}
+    this.recoveryMessage=`Data recovery: ${streak.count} successful samples, ${Math.floor((now-streak.first)/1000)}s span (need 3 / 60s)`;
+    if(streak.count<3||now-streak.first<60_000)return false;
+    r.paused=false;r.pauseReason='';r.pauseKind=undefined;r.pauseRevision=(r.pauseRevision??0)+1;this.save(s);
+    this.resetRecovery('Data pause recovered after spaced healthy checks');return true;
   }
   resumeEntries():void {
     const s=this.read(),r=s.session;if(!r)throw new Error('Initialize a session first');
     if(r.lossTriggered)throw new Error('Session loss circuit is latched');
     if(r.entries.some(e=>['reserved','closing','uncertain'].includes(e.status)))throw new Error('Pending or uncertain execution requires reconciliation');
-    r.paused=false;r.pauseReason='';this.save(s);
+    r.paused=false;r.pauseReason='';r.pauseKind=undefined;r.pauseRevision=(r.pauseRevision??0)+1;this.resetRecovery('Operator resume');this.save(s);
   }
   entryBlockReason(sizeUsd=0):string|null {
     try {
@@ -117,12 +151,12 @@ export class RiskStore {
     const s=this.read(),r=s.session!;const e=r?.entries.find(x=>x.id===id);
     if(!e||e.status!=='reserved'||!input.tokenId||r.entries.some(x=>x.tokenId===input.tokenId))throw new Error('Invalid entry commit');
     positive.parse(input.basisUsd);Object.assign(e,input,{status:'open'});
-    if(outstandingBasis(r.entries)>PILOT_LIMITS.outstandingUsd){r.paused=true;r.pauseReason='Actual costs exhausted outstanding budget';}
+    if(outstandingBasis(r.entries)>PILOT_LIMITS.outstandingUsd)this.setPause(r,'Actual costs exhausted outstanding budget','configuration');
     this.save(s);
   }
   failEntry(id:string):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.id===id);if(!e)throw new Error('Unknown reservation');
-    e.status='uncertain';s.session!.paused=true;s.session!.pauseReason='Entry execution/basis uncertain; reconcile';this.save(s);
+    e.status='uncertain';this.setPause(s.session!,'Entry execution/basis uncertain; reconcile','uncertain');this.save(s);
   }
   reconcileNeverBroadcast(id:string,input:z.infer<typeof noBroadcastSchema>):void {
     const proof=noBroadcastSchema.parse(input);
@@ -131,7 +165,7 @@ export class RiskStore {
     if(!r||!r.paused||!e||!['reserved','uncertain'].includes(e.status)||e.tokenId||e.basisUsd||e.closeReason)
       throw new Error('Only an unresolved never-broadcast entry can be reconciled');
     e.status='aborted';e.noBroadcastEvidence=proof;
-    r.pauseReason='Never-broadcast attempt reconciled; entries remain paused';this.save(s);
+    this.setPause(r,'Never-broadcast attempt reconciled; entries remain paused','manual');this.save(s);
   }
   openPositions():Array<Entry & {tokenId:string;basisUsd:number}> {
     return (this.read().session?.entries??[]).filter((e):e is Entry & {tokenId:string;basisUsd:number}=>e.status!=='closed'&&!!e.tokenId&&!!e.basisUsd);
@@ -143,6 +177,14 @@ export class RiskStore {
     if(!Number.isFinite(q.netUsd)||q.netUsd<0||!Number.isSafeInteger(q.blockNumber)||q.blockNumber<0||
        !Number.isFinite(q.observedAt)||this.now()-q.observedAt>60_000||q.observedAt>this.now()+1000)throw new Error('Invalid or stale exit quote');
     if((e.blockNumber!=null&&q.blockNumber<e.blockNumber)||(e.markAt!=null&&q.observedAt<e.markAt))throw new Error('Regressing exit snapshot');
+    const {netUsd,observedAt,blockNumber,...metrics}=q;
+    if(Object.keys(metrics).length){
+      if((q.tokenId!=null&&q.tokenId!==tokenId)||(e.observedPoolId&&q.poolId!=null&&q.poolId!==e.observedPoolId))throw new Error('Inconsistent exit identity');
+      const parsed=valuationSchema.safeParse(metrics),v=parsed.success?parsed.data:undefined;
+      if(v&&v.assets[0].address<v.assets[1].address&&v.expectedNetUsd+1e-8>=q.netUsd&&v.expectedNetUsd-q.netUsd<=v.slippageHaircutUsd+1e-8){
+        e.observedPoolId=v.poolId;e.valuation=v;e.productivity=sampleProductivity(e.productivity,v,q.observedAt,this.runId);e.observationStatus='available';
+      }else{e.valuation=undefined;e.observationStatus='invalid';if(e.productivity)e.productivity.runId='invalid-observation';}
+    }else {e.valuation=undefined;e.observationStatus='unavailable';if(e.productivity)e.productivity.runId='missing-observation';}
     const pnlPct=(q.netUsd/e.basisUsd-1)*100;
     const ageMin=(this.now()-e.at)/60_000;
     if(ageMin<0)throw new Error('Position entry timestamp is in the future');
@@ -165,13 +207,13 @@ export class RiskStore {
     let pnl=0;
     for(const e of r.entries){
       if(e.status==='aborted')continue; // zero cash movement; retained for audit
-      if(!e.basisUsd||e.status==='uncertain'||e.status==='closing'||e.status==='reserved') {r.paused=true;r.pauseReason='Incomplete session valuation';this.save(s);return false;}
+      if(!e.basisUsd||e.status==='uncertain'||e.status==='closing'||e.status==='reserved') {this.setPause(r,'Incomplete session valuation','uncertain');this.save(s);return false;}
       const value=e.status==='closed'?e.realizedNetUsd:e.markUsd;
-      if(value==null||(e.status!=='closed'&&(!e.markAt||this.now()-e.markAt>60_000))){r.paused=true;r.pauseReason='Missing fresh session valuation';this.save(s);return false;}
+      if(value==null||(e.status!=='closed'&&(!e.markAt||this.now()-e.markAt>60_000))){this.setPause(r,'Missing fresh session valuation',e.status==='closed'?'uncertain':'data');this.save(s);return false;}
       pnl+=value-e.basisUsd;
     }
     if(pnl<=-PILOT_LIMITS.lossUsd){
-      r.lossTriggered=true;r.paused=true;r.pauseReason='Session loss limit reached';
+      r.lossTriggered=true;this.setPause(r,'Session loss limit reached','loss');
       for(const e of r.entries)if(e.status==='open')e.closeReason='SESSION';this.save(s);return true;
     }
     return false;
@@ -184,7 +226,7 @@ export class RiskStore {
   cancelUnbroadcastClose(tokenId:string):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.tokenId===tokenId);
     if(!e||e.status!=='closing')throw new Error('No unbroadcast close to cancel');
-    e.status='open';s.session!.paused=true;s.session!.pauseReason='Close preflight stopped before broadcast';this.save(s);
+    e.status='open';this.setPause(s.session!,'Close preflight stopped before broadcast','uncertain');this.save(s);
   }
   finishClose(tokenId:string,netUsd:number):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.tokenId===tokenId);
@@ -193,7 +235,7 @@ export class RiskStore {
   }
   failClose(tokenId:string):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.tokenId===tokenId);if(!e)throw new Error('Unknown position');
-    e.status='uncertain';s.session!.paused=true;s.session!.pauseReason='Close outcome uncertain; reconcile before any retry';this.save(s);
+    e.status='uncertain';this.setPause(s.session!,'Close outcome uncertain; reconcile before any retry','uncertain');this.save(s);
   }
 }
 export const riskStore=new RiskStore(dataPath('auto-risk.json'));

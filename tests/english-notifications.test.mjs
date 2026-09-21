@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {formatActivityCoverage} from '../src/radar/fast-hunt.ts';
 
 // Isolate these renderers from RPC, Telegram, persisted data and real credentials.
 function loadModule(file, dependencies, globals = {}) {
@@ -32,11 +33,13 @@ test('all notification types use English while retaining metadata and callback I
     './tg.js': { send: async (text, options) => messages.push({ text, options }), explorerTx: (h) => `https://example.invalid/${h}` },
     './format.js': format,
     '../util/format.js': { fmtMcap: (n) => `$${n}` },
+    '../radar/fast-hunt.js':{formatActivityCoverage},
   });
   const token = '0x123';
   await api.notifySpike({ symbol: 'KUCING', addr: token, prevVol5m: 10, vol5m: 20, vol1h: 30, liq: 100, fdv: 1000, chg5m: 1, chg1h: -2, safe: { reason: 'passed', backPct: 99 }, url: 'https://example.invalid/chart' });
   await api.notifyNewToken({ symbol: 'KUCING', token, kind: 'mint', fee: 30000, wethSeed: 1, safeReason: 'passed', backPct: 99 });
   await api.notifyCandidate({ token: { symbol: 'KUCING', address: token, liquidity: 100, volume: 200, marketCap: 1000 }, kind: 'meme', community: 'clear', score: 80, fomo: 40, flags: [], verdict: 'ape' }, { quote: 'eth', fee: 30000, volUsd: 200, liqUsd: 100 });
+  assert.match(messages.at(-1).text,/m5.*unknown/i);assert.match(messages.at(-1).text,/history unavailable/i);assert.doesNotMatch(messages.at(-1).text,/80\/100|FOMO/);
   await api.notifyAutoLp({ opened: true, symbol: 'KUCING', sizeEth: 0.1, result: { tokenId: 123, mode: 'inrange', tickLower: 0, tickUpper: 100, txHash: '0xabc' } });
   await api.notifyAutoClose({ sym: 'KUCING', tokenId: 123, reason: 'FVLOW', version: 'v4', pnlPct: 1, pnlEth: 0.01 });
   await api.notifyRebalance({ sym: 'KUCING', oldTokenId: 123, newTokenId: 124 });
