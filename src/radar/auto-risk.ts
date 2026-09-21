@@ -27,6 +27,8 @@ const entrySchema = z.object({
   markUsd:z.number().finite().nonnegative().optional(),markAt:positive.optional(),
   blockNumber:z.number().int().nonnegative().optional(),
   closeReason:reasonSchema.optional(),realizedNetUsd:z.number().finite().optional(),
+  closedAt:positive.optional(),
+  closeTimeEvidence:z.object({txHash:z.string().regex(/^0x[0-9a-f]{64}$/i),blockNumber:z.number().int().positive()}).strict().optional(),
 }).strict().refine(e=>e.status!=='aborted'||(!!e.noBroadcastEvidence&&!e.tokenId&&!e.basisUsd&&!e.closeReason),'Invalid aborted attempt');
 const sessionSchema = z.object({
   id:z.string(),startedAt:positive,paused:z.boolean(),pauseReason:z.string(),lossTriggered:z.boolean(),
@@ -62,6 +64,15 @@ export class RiskStore {
     fs.renameSync(tmp,this.file);
   }
   snapshot(){return this.read().session;}
+  reportingSnapshot(){return this.read();}
+  /** Operator backfill after on-chain receipt verification; never rewrites accounting. */
+  backfillCloseTime(tokenId:string,proof:{closedAt:number;txHash:string;blockNumber:number}):void {
+    const s=this.read(),e=s.session?.entries.find(e=>e.tokenId===tokenId);
+    if(!e||e.status!=='closed'||e.closedAt!=null)throw new Error('Closed entry absent or timestamp already recorded');
+    if(!Number.isSafeInteger(proof.closedAt)||proof.closedAt<Math.max(e.at,e.markAt??0)||proof.closedAt>this.now()||
+       !Number.isSafeInteger(proof.blockNumber)||proof.blockNumber<(e.blockNumber??1)||!/^0x[0-9a-f]{64}$/i.test(proof.txHash))throw new Error('Invalid verified close timestamp evidence');
+    e.closedAt=proof.closedAt;e.closeTimeEvidence={txHash:proof.txHash,blockNumber:proof.blockNumber};this.save(s);
+  }
   hasSession():boolean{return this.read().session!==null;}
   executionBlocked():boolean{return !!this.read().session?.entries.some(e=>['reserved','closing','uncertain'].includes(e.status));}
   startSession():void {
@@ -178,7 +189,7 @@ export class RiskStore {
   finishClose(tokenId:string,netUsd:number):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.tokenId===tokenId);
     if(!e||e.status!=='closing'||!Number.isFinite(netUsd))throw new Error('Invalid close settlement');
-    e.status='closed';e.realizedNetUsd=netUsd;this.save(s);this.sessionLossCheck();
+    e.status='closed';e.realizedNetUsd=netUsd;e.closedAt=this.now();this.save(s);this.sessionLossCheck();
   }
   failClose(tokenId:string):void {
     const s=this.read(),e=s.session?.entries.find(x=>x.tokenId===tokenId);if(!e)throw new Error('Unknown position');

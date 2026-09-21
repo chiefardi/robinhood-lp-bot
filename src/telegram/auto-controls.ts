@@ -1,4 +1,5 @@
 import { RiskStore, PILOT_LIMITS, validateExitSettings, type ExitSettings } from '../radar/auto-risk.js';
+import {summarizeCash} from '../radar/cash-report.js';
 interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number}
 interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean;checkFunding:()=>Promise<void>}
 function ready(a:AutoSettings):void {
@@ -60,7 +61,7 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     const occupied=entries.filter(e=>e.status!=='closed'&&e.status!=='aborted');
     const used=occupied.reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
     const block=d.store.entryBlockReason(a.sizeUsd);
-    const realized=entries.filter(e=>e.status==='closed').reduce((n,e)=>n+(e.realizedNetUsd??0)-(e.basisUsd??0),0);
+    const realized=summarizeCash(d.store.reportingSnapshot()).session.pnlUsd;
     const lines=[
       `Alexandria Auto — ${a.enabled?'monitoring ON':'OFF'}; entries ${a.entryPaused||s?.paused?'PAUSED':block?'BLOCKED':'enabled'}`,
       `Session: ${s?s.id:'not initialized'}`,
@@ -70,7 +71,7 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
       `Hard SL: ${a.slPct>0?'-'+a.slPct+'%':'off'}; fixed TP: ${a.tpPct>0?'+'+a.tpPct+'%':'off'}; trailing: ${a.trailActivationPct>0?'+'+a.trailActivationPct+'% / '+a.trailGivebackPct+'pp':'off'}.`,
       `Timed TP: ${(a.timedTpMin??0)>0?'after '+a.timedTpMin+'m at >= +'+a.timedTpPct+'% net':'off'}; maximum hold: ${(a.maxHoldMin??0)>0?a.maxHoldMin+'m':'off'}.`,
       'Both timers apply only while trailing is not active and armed. Armed winners keep running; SL and session-loss protection remain active.',
-      `Realized session cash PnL: $${realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
+      `Realized session cash PnL: ${realized==null?'unavailable':'$'+realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
       ...(s?.pauseReason?[`Pause: ${s.pauseReason}`]:[]),
       ...[...occupied,...entries.filter(e=>!occupied.includes(e)).slice(-5)].map(e=>[
         `#${e.tokenId??'pending'} ${e.status}: basis ${e.basisUsd==null?'unknown':'$'+e.basisUsd.toFixed(2)}, peak ${e.peakPct==null?'unknown':e.peakPct.toFixed(2)+'%'}, ${e.closeReason??'no exit latched'}`,

@@ -20,6 +20,7 @@ import { ethers } from "ethers";
 import { esc, pre, padR, padL, sg, money, tokenEmoji } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
+import {buildCashReport} from '../radar/cash-report.js';
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 
 const log = logger("handlers");
@@ -1642,12 +1643,18 @@ async function sendCloseCard(p: {
 }
 
 export async function onBriefing(): Promise<void> {
-  await send("📋 Preparing daily briefing… (LLM analysis may take ~1 minute)");
+  await send("📋 Preparing daily cash-accounting briefing…");
   const { runBriefing } = await import("./briefing.js");
   await runBriefing("manual");
 }
 
 export async function onPnl(): Promise<void> {
+  try { await sendMenu(buildCashReport('pnl')); }
+  catch { await send('Cash PnL unavailable: risk ledger unreadable or invalid. No zero balance inferred; inspect /auto status.'); }
+}
+
+/** Legacy manual/wallet accounting is intentionally not the auto-pilot /pnl command. */
+export async function onLegacyPnl(): Promise<void> {
   await send("📊 Calculating lifetime PnL… (scanning history + rugs, ~20 seconds)");
   let r;
   try {

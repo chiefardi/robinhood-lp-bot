@@ -67,16 +67,17 @@ function briefingDependencies(entries, briefKey = '') {
     './tg.js': { send: () => assert.fail('Unexpected Telegram send') },
     './format.js': format,
     '../util/log.js': { logger: () => ({ info() {}, warn() {} }) },
+    '../radar/cash-report.js': {buildCashReport:()=>assert.fail('Legacy test must not render the pilot report')},
   };
 }
 
-test('deterministic briefing uses English and English duration units for every close reason', async () => {
+test('legacy manual briefing uses English and English duration units for every close reason', async () => {
   const entries = ['TP', 'SL', 'OOR', 'VFADE', 'FVLOW', 'manual'].map((reason, i) => ({
     source: 'bot', closedAt: Date.now(), pnlEth: 0.01, pnlUsd: 1, pnlPct: 2, feeEth: 0.001,
     reason, sym: 'KUCING', pair: 'KUCING/WETH', heldMs: (i ? 25 : 2) * 3600000, mode: 'inrange',
   }));
-  const { buildBriefing } = loadModule('briefing.ts', briefingDependencies(entries));
-  const text = await buildBriefing();
+  const { buildLegacyBriefing } = loadModule('briefing.ts', briefingDependencies(entries));
+  const text = await buildLegacyBriefing();
   assert.match(text, /DAILY BRIEFING/);
   assert.match(text, /OPEN POSITIONS/);
   assert.match(text, /KUCING/);
@@ -86,9 +87,9 @@ test('deterministic briefing uses English and English duration units for every c
   assert.doesNotMatch(text, indonesian);
 });
 
-test('future briefing requests explicitly require English and unchanged token names', async () => {
+test('legacy LLM briefing requests explicitly require English and unchanged token names', async () => {
   let request;
-  const { buildBriefing } = loadModule('briefing.ts', briefingDependencies([], 'test-only'), {
+  const { buildLegacyBriefing } = loadModule('briefing.ts', briefingDependencies([], 'test-only'), {
     AbortSignal,
     fetch: async (url, options) => {
       assert.equal(url, 'https://example.invalid/brief');
@@ -96,10 +97,23 @@ test('future briefing requests explicitly require English and unchanged token na
       return { ok: true, json: async () => ({ choices: [{ message: { content: '**💚 PROFIT** — No closes yet.' } }] }) };
     },
   });
-  const text = await buildBriefing();
+  const text = await buildLegacyBriefing();
   assert.match(request.messages[0].content, /English only/);
   assert.match(request.messages[0].content, /Preserve token names and symbols exactly/);
   assert.match(request.messages[1].content, /KUCING/);
   assert.doesNotMatch(request.messages[0].content, indonesian);
   assert.match(text, /No closes yet/);
+});
+
+test('scheduled briefing reads real cash report even when legacy ledger is empty',async()=>{
+ const {summarizeCash,renderCashReport}=await import('../src/radar/cash-report.ts');
+ const now=Date.now();
+ const state={version:1,history:[],session:{id:'cash',startedAt:now-2000,paused:false,pauseReason:'',lossTriggered:false,
+  entries:[{id:'1',token:'0xabc',tokenId:'123',status:'closed',sizeUsd:29,sizeEth:.01,at:now-2000,closedAt:now-1000,basisUsd:29,realizedNetUsd:32,armed:false,closeReason:'MAX_HOLD'}]}};
+ const deps=briefingDependencies([]);
+ deps['../radar/cash-report.js']={buildCashReport:kind=>renderCashReport(summarizeCash(state,now),kind)};
+ deps['../chain/ledger.js']={readLedger:()=>assert.fail('Must not use legacy accounting'),ledgerSummary:()=>assert.fail('Must not use legacy accounting')};
+ const text=await loadModule('briefing.ts',deps).buildBriefing();
+ assert.match(text,/Realized 24h:<\/b> \+\$3\.00/);assert.match(text,/1 closed/);assert.match(text,/#123/);
+ assert.match(text,/Fee breakdown: unavailable/);assert.doesNotMatch(text,indonesian);
 });

@@ -83,8 +83,23 @@ at deployment. Service restarted active; updated policy/status delivered to Tele
 
 `data/auto-risk.json` is the pilot's authoritative ledger, with immutable USD-valued
 entry cash debits, reservation IDs, owned NFT IDs, peak PnL, close intents and settlements.
-`/auto status` reports this ledger. Legacy `/ledger`, `/pnl` and profit cards are not
-the pilot's cash-accounting source; upstream LP-versus-HODL reporting is unchanged.
+`/auto status`, `/pnl` and the daily `/briefing` use this ledger. `/pnl` and the
+briefing include all recorded sessions, separately labeled from the current session.
+Realized PnL is settled net cash minus immutable entry cost, not today's ETH-valued
+cost or LP-versus-HODL. Legacy `/ledger` and profit cards remain separate.
+
+Close settlement now records `closedAt`. Historical times may only be backfilled
+from verified receipts (the stopped-bot `ops/close-time-probe.ts --apply` workflow).
+Unverified times make 24h coverage explicitly incomplete; stale/missing open marks
+are unavailable, never zero. A fee-only breakdown is unavailable separately and is
+not added again to net cash PnL. Reports are deterministic and do not need an LLM key.
+
+September 21 pause investigation: Kyber returned `service temporarily overloaded`
+for ASKR #2996973 on September 20 at 15:29, 15:31 and 15:32 UTC, and later again.
+The quote failure paused entries; session valuation then recorded `Missing fresh
+session valuation`. Exits continued and #2996973 settled successfully. This is a
+persistent safety pause, not a reporting loss or occupied slot. The reporting fix
+does not introduce automatic resume or bypass uncertain-execution/loss protection.
 
 Principal plus accrued fees are quoted for liquidation using pinned on-chain state,
 full-amount sell routes, swap slippage haircuts and a configured gas reserve. The
