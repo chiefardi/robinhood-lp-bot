@@ -73,8 +73,13 @@ at deployment. Service restarted active; updated policy/status delivered to Tele
   have priority; maximum holding time is reported before timed profit if both are
   first observed after expiry. A latched exit is never cleared by a rebound.
 - Fresh valuation is required even for a previously latched exit retry. Missing
-  quotes pause entries and warn; exit checks continue. Recovery does not silently
-  clear an entry pause. Timers and stops are not guaranteed fills.
+  quotes pause entries and warn; exit checks continue. The September 21 reliability
+  update adds explicitly classified data-pause recovery: three healthy samples
+  spanning at least 60 seconds, at least 20 seconds apart. A gap over 90 seconds,
+  failed health check or restart resets the streak. Recovery runs under the wallet
+  lock, verifies inventory/nonces/funding/fresh quotes and rechecks session risk and
+  operator controls. Operator, loss, configuration, uncertain-execution and legacy
+  unclassified pauses remain manual-only. Timers and stops are not guaranteed fills.
 - Compounding, automatic re-ranging, legacy OOR and fee-velocity exits are disabled
   for this bounded auto mode. Manual trading remains available when auto is off,
   no wallet operation is running and no uncertain execution needs reconciliation.
@@ -105,6 +110,17 @@ Principal plus accrued fees are quoted for liquidation using pinned on-chain sta
 full-amount sell routes, swap slippage haircuts and a configured gas reserve. The
 estimate is not a guaranteed execution quote: removing the LP changes available
 liquidity, token taxes can matter, and prices can move between transactions.
+
+The September 21 diagnostics keep expected net exit value (before slippage haircut,
+after the same gas reserve) separate from buffered `netUsd`. All existing financial
+exit decisions still use buffered `netUsd`; additive metrics cannot weaken that
+protection. Reports distinguish actual settlement from the final pre-close estimate.
+Per-position monitoring records sampled in-range time and raw accrued-fee changes.
+The first sample is a baseline, not newly earned fees. Sampling gaps and restart
+intervals are unknown; displayed activity is not exact historical occupancy.
+Indicative fee USD allocations use the full-size route's average, not a separately
+executable fee sale or realized PnL. Historical positions are not backfilled with
+invented activity. Invalid optional diagnostics are unavailable, not financial zeroes.
 
 Strict mint and close preserve pre-existing token/USDG balances. Newly acquired
 surplus and withdrawn non-ETH assets are sold back to ETH. Final cash snapshots
@@ -164,6 +180,14 @@ then ranks **exact v4 pool** activity before costly on-chain qualification. Its
 traffic score is rules-only and does not treat token utility labels or token-wide
 volume as evidence that the chosen pool is busy. The chosen pool must be USDG;
 an ETH pool with higher historic fees does not displace an eligible USDG pool.
+The September 21 soft-ranking update prefers exact-pool activity observed on at
+least three eligible snapshots spanning five minutes, without a sampling gap over
+six minutes. It retains 30 minutes of bounded history; duplicate observations do
+not count. New/unknown pools remain eligible under the unchanged thresholds.
+Preference is applied before expensive qualification and again using the actual
+qualified pool before dispatch. Hunt alerts show volume and observation evidence,
+not a purported confidence score. These overlapping rolling-window snapshots are
+not independent flow buckets, proof of organic volume, or proof of a better strategy.
 The full fresh GMGN holder/security and exact-pool checks still run at entry.
 GMGN requests are serialized and paced, with a five-minute cooldown on rate-limit
 errors. Queued/stale or unavailable data blocks entry, not a safety bypass.
