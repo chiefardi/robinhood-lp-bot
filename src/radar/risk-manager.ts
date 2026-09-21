@@ -45,7 +45,8 @@ async function runLockedCycle(store:RiskStore,settings:ExitSettings,d:Dependenci
       if(!began){store.resetRecovery('Fresh pre-close quote unavailable');store.pauseDataEntries('Fresh liquidation quote unavailable');d.warn(`Position #${p.tokenId}: fresh pre-close quote unavailable; no transaction sent`);continue;}
       const notBroadcast=error?.broadcastPossible===false;
       if(began&&!settled){if(notBroadcast)store.cancelUnbroadcastClose(p.tokenId);else store.failClose(p.tokenId);}
-      d.warn(settled?`Position #${p.tokenId}: cash settlement recorded; notification failed`:notBroadcast?`Position #${p.tokenId}: close stopped before broadcast; entries paused`:`Position #${p.tokenId}: close requires reconciliation; automatic retry blocked`);
+      const safeReason=String(error?.message??'unknown').replace(/https?:\/\/[^\s"']+/g,'[redacted-url]').replace(/0x[0-9a-f]{64,}/gi,'[redacted-data]').slice(0,180);
+      d.warn(settled?`Position #${p.tokenId}: cash settlement recorded; notification failed`:notBroadcast?`Position #${p.tokenId}: close stopped before broadcast; entries paused (${safeReason})`:`Position #${p.tokenId}: close requires reconciliation; automatic retry blocked`);
     }
   }
   const expected=store.snapshot();
