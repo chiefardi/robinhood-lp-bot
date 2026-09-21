@@ -210,6 +210,35 @@ calculation; it is deterministic arithmetic.
 
 ## Verification
 
+### Pilot reliability deployment receipt — 2026-09-21 13:02 WIB
+
+- Tencent runtime commit `31630cd2e26647f6a94649e5ef1566e152d243a6`, including
+  implementation `3ee93e9` and independently reviewed qualification fix `bfa8833`.
+- Coordinator and VPS independently passed 242/242 tests, main and ops TypeScript
+  checks, and build. The final review's sole same-token ranking finding was closed.
+- Root-only backup: `/var/backups/robinhood-lp-pilot-reliability-20260921T0557/`.
+  Config, full entry records, session identity and cash accounting were compared
+  unchanged. Two new deployment documents initially hit an old root-owned directory;
+  its ownership was corrected and only those missing committed files restored.
+- Fresh preflight found the old pause already cleared, no open/unresolved positions,
+  confirmed/pending nonce 49/49, and 0.04337532394040858 native ETH. A temporary
+  maintenance pause protected deployment. Under the stopped-bot process lock,
+  fresh strict inventory, nonce, funding/return routes, gas, exit settings and
+  session loss checks passed before the explicitly approved operator resume.
+- Final status: monitoring ON, entries enabled, entryBlock null, three free slots,
+  unchanged $29 size / $90 outstanding basis / -$15 session loss circuit. All exit
+  parameters and screening gates are unchanged; qualifying candidates are still
+  required. Six historical attempts (five settled, one aborted) remain intact;
+  realized cash PnL remains +$5.97880352028352.
+- Telegram acknowledged both maintenance and resumed status messages, zero failures.
+  Service active/running, zero restarts; watch, hunt, management and briefing loops
+  started. Exact-pool history is writing live (512 bounded pool rows at verification).
+  No transaction was broadcast by the deployment checks and no entry was forced.
+- Typed outage recovery and new position metrics have offline behavioral coverage;
+  no live outage recovery or new position accrual is claimed by this receipt.
+  Existing Blockscout display enumeration still logs HTTP 403; strict entry inventory
+  checks passed independently and their fail-closed behavior was not relaxed.
+
 ### Cash-report deployment receipt — 2026-09-21 11:04 WIB
 
 - Tencent Alexandria deployed runtime commit `26e17f1aeea8b086b29454959497a91b3bdabcca`.
