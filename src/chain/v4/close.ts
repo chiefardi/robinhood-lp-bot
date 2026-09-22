@@ -89,7 +89,7 @@ export interface V4CloseResult {
   sweptEth?: number; // ETH gained from sweeping token/USDG proceeds back to native
 }
 
-export type V4CloseReason = "TP" | "SL" | "TRAIL" | "SESSION" | "OOR" | "VFADE" | "FVLOW" | "manual";
+export type V4CloseReason = "TP" | "SL" | "TRAIL" | "SESSION" | "TIME_TP" | "MAX_HOLD" | "OOR" | "VFADE" | "FVLOW" | "manual";
 
 /** Once broadcast is possible the caller must stop automatic retries and reconcile. */
 export class StrictExitError extends Error {
@@ -119,7 +119,7 @@ export interface StrictV4CloseResult {
  * Completion proves burn + all received non-ETH/WETH sales, not a particular USD profit.
  * The caller measures cash before/after at one fixed ETH/USD rate, including gas.
  */
-export async function closeV4PositionStrict(tokenId: string, _reason?: V4CloseReason, opts?: { beforeBurn?: () => void }): Promise<StrictV4CloseResult> {
+export async function closeV4PositionStrict(tokenId: string, _reason?: V4CloseReason, opts?: { beforeBurn?: () => void; quoteObservedAt?:number }): Promise<StrictV4CloseResult> {
   let broadcastPossible = false;
   let positionBurned = false;
   let txHash: string | undefined;
@@ -170,6 +170,7 @@ export async function closeV4PositionStrict(tokenId: string, _reason?: V4CloseRe
     const data = iface.encodeFunctionData("modifyLiquidities", [unlock, Math.floor(Date.now() / 1000 + 600)]);
     await provider.call({ to: C.v4PositionManager!, data, value: 0n, from: w.address });
     const gas = await overrides();
+    if(opts?.quoteObservedAt!==undefined&&(!Number.isFinite(opts.quoteObservedAt)||opts.quoteObservedAt<=0||Date.now()-opts.quoteObservedAt>60_000||opts.quoteObservedAt>Date.now()+1000))throw new Error('Liquidation quote expired before burn');
     opts?.beforeBurn?.();
     broadcastPossible = true; // sendTransaction may throw after a successful submission.
     const tx = await w.sendTransaction({ to: C.v4PositionManager!, data, value: 0n, ...gas });

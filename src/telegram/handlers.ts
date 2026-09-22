@@ -20,6 +20,7 @@ import { ethers } from "ethers";
 import { esc, pre, padR, padL, sg, money, tokenEmoji } from "./format.js";
 import { fmtMcap, fmtAge } from "../util/format.js";
 import { logger } from "../util/log.js";
+import {buildCashReport,reportChunks} from '../radar/cash-report.js';
 import type { PoolInfo, TokenMeta, MintMode } from "../types.js";
 
 const log = logger("handlers");
@@ -1209,7 +1210,14 @@ export async function onAuto(arg = ""): Promise<void> {
   const { riskStore } = await import("../radar/auto-risk.js");
   const { startManage, stopManage } = await import("../radar/automanage.js");
   const { walletBusy } = await import("../chain/txlock.js");
-  await riskAutoCommand(arg, cfg.autoLp, {store:riskStore,persist,start:startManage,stop:stopManage,send,walletBusy});
+  const checkFunding = async () => {
+    const {preflightKyberFunding} = await import('../chain/kyber.js');
+    const {freshEntryPrice} = await import('../radar/entry-guard.js');
+    const {USDG} = await import('../chain/v4/discover.js');
+    const price = await freshEntryPrice();
+    await preflightKyberFunding(USDG,ethers.parseEther((cfg.autoLp.sizeUsd/price.usd).toFixed(18)));
+  };
+  await riskAutoCommand(arg, cfg.autoLp, {store:riskStore,persist,start:startManage,stop:stopManage,send,walletBusy,checkFunding});
 }
 
 // ══════════ close ══════════
@@ -1508,7 +1516,7 @@ export async function onHunt(arg?: string): Promise<void> {
     cfg.scan.enabled = true;
     persist();
     startScan();
-    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (3-5% fees + active trading + passed screening).`);
+    await send(`🎯 <b>Hunter ON</b> — scan LP candidates every ${cfg.scan.intervalMin} minutes (${cfg.scan.feeMinPpm/10000}-${cfg.scan.feeMaxPpm/10000}% fees + active trading + passed screening).`);
     return;
   }
   if (a === "off") {
@@ -1523,7 +1531,7 @@ export async function onHunt(arg?: string): Promise<void> {
     const mid = m?.result?.message_id;
     try {
       const r = await scanNow();
-      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (3-5% fees + active trading + screening).${r.found ? " Alerts sent ↑" : " No candidates passed this time."}`);
+      await edit(mid, `🎯 Scan complete — <b>${r.scanned}</b> trending → <b>${r.found} candidates</b> passed (${cfg.scan.feeMinPpm/10000}-${cfg.scan.feeMaxPpm/10000}% fees + active trading + screening).${r.found ? " Alerts sent ↑" : " No candidates passed this time."}`);
     } catch (e) {
       await edit(mid, `❌ Scan failed: ${short(e, 100)}`);
     }
@@ -1635,12 +1643,18 @@ async function sendCloseCard(p: {
 }
 
 export async function onBriefing(): Promise<void> {
-  await send("📋 Preparing daily briefing… (LLM analysis may take ~1 minute)");
+  await send("📋 Preparing daily cash-accounting briefing…");
   const { runBriefing } = await import("./briefing.js");
   await runBriefing("manual");
 }
 
 export async function onPnl(): Promise<void> {
+  try { for(const chunk of reportChunks(buildCashReport('pnl')))await sendMenu(chunk); }
+  catch { await send('Cash PnL unavailable: risk ledger unreadable or invalid. No zero balance inferred; inspect /auto status.'); }
+}
+
+/** Legacy manual/wallet accounting is intentionally not the auto-pilot /pnl command. */
+export async function onLegacyPnl(): Promise<void> {
   await send("📊 Calculating lifetime PnL… (scanning history + rugs, ~20 seconds)");
   let r;
   try {
@@ -1767,7 +1781,6 @@ const AUTOLP_NUM_MAP: Record<string, keyof typeof cfg.autoLp> = {
   alpsize: "sizeEth",
   alpscore: "minScore",
   alpmaxopen: "maxOpen",
-  alpperhour: "maxPerHour",
   alpdaily: "dailyCapEth",
   alpminliq: "minLiqUsd",
   alpmaxtax: "maxTaxPct",
@@ -1793,7 +1806,7 @@ const SCAN_NUM_MAP: Record<string, keyof typeof cfg.scan> = {
   huntcooldown: "cooldownMin", // menit sebelum token yg udah di-alert boleh muncul lagi (rotasi cepet = kecil)
 };
 const SET_HELP =
-  "LP: width, deposit, slippage, gastarget\nWatch: vol5m, vol1h, rise, liq, tax, cooldown, interval\nFeed: minseed, activity, feedcooldown · toggle: newtoken/posmon/autoclose (0/1)\nRadar: radar/gmgn (0/1)\nHunt: huntvol, huntfees, huntyield, huntscore, huntmcapmin, huntmcapmax, huntpoolliq, huntmaxratio, huntspike, huntcooldown\nAuto-LP: alpsize, alpscore, alpmaxopen, alpperhour, alpdaily, alpminliq, alpmaxtax, alpgrace, alpoorcount, alpoorhours, alpcompoundmin, alpvolfade, alpvfadeage, alpminfeeh, alpfeegrace · alpmode single|inrange · alpclose 0/1 · alprebalance close|rebalance · alpcompound 0/1";
+  "LP: width, deposit, slippage, gastarget\nWatch: vol5m, vol1h, rise, liq, tax, cooldown, interval\nFeed: minseed, activity, feedcooldown · toggle: newtoken/posmon/autoclose (0/1)\nRadar: radar/gmgn (0/1)\nHunt: huntvol, huntfees, huntyield, huntscore, huntmcapmin, huntmcapmax, huntpoolliq, huntmaxratio, huntspike, huntcooldown\nAuto-LP: alpsize, alpscore, alpmaxopen, alpdaily, alpminliq, alpmaxtax, alpgrace, alpoorcount, alpoorhours, alpcompoundmin, alpvolfade, alpvfadeage, alpminfeeh, alpfeegrace · alpmode single|inrange · alpclose 0/1 · alprebalance close|rebalance · alpcompound 0/1";
 
 export async function onSet(text: string): Promise<void> {
   const [, k, v] = text.split(/\s+/);

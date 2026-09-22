@@ -5,13 +5,14 @@ import { inOorCooldown } from './oorcool.js';
 import { logger } from '../util/log.js';
 import { gmgnToken } from './gmgn.js';
 import { riskStore,validateExitSettings } from './auto-risk.js';
-import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, expectedPoolFailure, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice } from './entry-guard.js';
+import { guardedEntry, securityFailure, llmFailure, heuristicScreenFailure, poolActivityFailure, activityLimits, expectedPoolFailure, formatPoolActivityTelemetry, formatHolderTelemetry, entryBasisUsd, strictCashSnapshot, strictInventory, freshEntryPrice, EntryEligibilityError, EntryRolledBackError } from './entry-guard.js';
 import type { Candidate, Verdict } from './radar.js';
+import { assertKyberConfigured, preflightKyberFunding } from '../chain/kyber.js';
 
 const log = logger('autolp');
 const GAS_RESERVE = 0.0004;
 type OpenLike = { tokenId:string|null; txHash:string; tickLower:number; tickUpper:number; depositEth?:string; poolId?:string; mode?:string; side?:string; entryMcap?:number; swapHash?:string };
-export interface AutoLpResult { opened:boolean; reason:string; token:string; symbol:string; sizeEth?:number; result?:OpenLike }
+export interface AutoLpResult { opened:boolean; reason:string; token:string; symbol:string; sizeEth?:number; result?:OpenLike; uncertain?:boolean }
 
 export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null): Promise<AutoLpResult | null> {
   if (!cfg.autoLp.enabled) return null;
@@ -19,18 +20,20 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
     log.info(`skip ${candidate.symbol}: ${reason}`);
     return {opened:false,reason,token:candidate.token,symbol:candidate.symbol};
   };
+  let reservationId:string|undefined;
   try {
     let sizeEth = 0;
-    let reservationId:string|undefined;
     const result = await guardedEntry({
       acquire: acquireWallet,
       release: releaseWallet,
       allowed: () => {
         validateExitSettings(cfg.autoLp);
-        return cfg.autoLp.slPct>0 && (cfg.autoLp.tpPct>0||cfg.autoLp.trailActivationPct>0) && cfg.autoLp.enabled && !cfg.autoLp.entryPaused && riskStore.entryAllowed();
+        return cfg.autoLp.slPct>0 && (cfg.autoLp.tpPct>0||cfg.autoLp.trailActivationPct>0) && cfg.autoLp.enabled && !cfg.autoLp.entryPaused && riskStore.entryAllowed(cfg.autoLp.sizeUsd);
       },
       prepare: async () => {
+        assertKyberConfigured();
         const a = cfg.autoLp;
+        const mode=a.mode;
         if (!a.sources.includes(candidate.source)) throw new Error('source not allowed');
         if (inOorCooldown(candidate.token)) throw new Error('OOR cooldown');
         const llmBlock = llmFailure(verdict,a.requireLlm,a.requireAction,a.minScore);
@@ -49,7 +52,7 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (failure) throw new Error(failure);
         const {qualifyCandidate} = await import('../chain/candidate.js');
         const limits=activityLimits(candidate.source,cfg.watch,a);
-        const q = await qualifyCandidate(candidate.token, undefined, 'usd', {...limits,now:Date.now()});
+        const q = await qualifyCandidate(candidate.token, undefined, 'usd', {...limits,now:Date.now(),expectedPoolId:candidate.expectedPoolId});
         if (!q) throw new Error('no qualified v4 pool; v3 fallback prohibited');
         const changedPool=expectedPoolFailure(candidate.expectedPoolId,q.v4.poolId);
         if(changedPool)throw new Error(changedPool);
@@ -74,29 +77,83 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         if (!Number.isFinite(a.sizeUsd) || a.sizeUsd <= 0 || a.sizeUsd > 30) throw new Error('pilot size must be at most $30');
         sizeEth = a.sizeUsd / price.usd;
         if (!Number.isFinite(sizeEth) || sizeEth <= 0 || before.eth < GAS_RESERVE || before.eth + before.weth - GAS_RESERVE < sizeEth) throw new Error('insufficient or invalid wallet balances');
+        const {USDG} = await import('../chain/v4/discover.js');
+        const funding = mode==='asymmetric'
+          ? await (await import('../chain/v4/asymmetric.js')).preflightAsymmetricFunding(q.v4,USDG,ethers.parseEther(sizeEth.toFixed(18)),preflightKyberFunding,a.slPct,a.sizeUsd,a.exitCostBufferUsd)
+          : await preflightKyberFunding(USDG,ethers.parseEther(sizeEth.toFixed(18)));
+        // Do not start with a funding round trip already beyond the approved SL.
+        const fundingLossPct=(1-Number(funding.returnWei)/Number(ethers.parseEther(sizeEth.toFixed(18))))*100;
+        if(!Number.isFinite(fundingLossPct)||fundingLossPct>=a.slPct)throw new Error('Funding round trip exceeds pilot stop-loss budget');
         if (Date.now() - price.observedAt > 60_000 || Date.now() < price.observedAt) throw new Error('entry price stale');
         const finalSecurity = securityFailure(g,a.maxTaxPct,Date.now());
         if (finalSecurity) throw new Error(finalSecurity);
-        return {q,mint,price,before,g,sizeEth,sizeUsd:a.sizeUsd,mode:a.mode};
+        const finalActivity = poolActivityFailure(q,limits,Date.now());
+        if (finalActivity) throw new Error(finalActivity);
+        if(cfg.autoLp.mode!==mode)throw new Error('Entry mode changed during preflight');
+        log.info(`funding preflight ${candidate.symbol}: ${mode==='asymmetric'?'both ETH funding legs simulated; both returns built':'ETH/USDG buy simulated; USDG/ETH return built'}`);
+        return {q,mint,price,before,g,funding,sizeEth,sizeUsd:a.sizeUsd,mode};
       },
       reserve: p => reservationId=riskStore.reserveEntry({token:candidate.token,sizeUsd:p.sizeUsd,sizeEth:p.sizeEth}),
       execute: async p => {
         const width = Math.max(6,Math.min(24,Math.round(8+p.q.volPct/5)));
         const amount = p.sizeEth.toFixed(18);
+        let funded=false;
+        let lastReceiptBlock=p.before.blockNumber;
+        const assertControl=()=>{
+          validateExitSettings(cfg.autoLp);
+          const session=riskStore.snapshot();
+          if(cfg.autoLp.mode!==p.mode||cfg.autoLp.slPct<=0||(cfg.autoLp.tpPct<=0&&cfg.autoLp.trailActivationPct<=0)||!cfg.autoLp.enabled||cfg.autoLp.entryPaused||!session||session.paused||session.lossTriggered||!session.entries.some(e=>e.id===reservationId&&e.status==='reserved'))throw Error('entry control changed during execution');
+        };
         const strict={fixedEntryPrice:p.price.usd,priceObservedAt:p.price.observedAt,sizeUsd:p.sizeUsd,expectedPoolId:p.q.v4.poolId,assertActive:()=>{
+          try {
+          if(cfg.autoLp.mode!==p.mode)throw new Error('Entry mode changed during execution');
           const securityBlock=securityFailure(p.g,cfg.autoLp.maxTaxPct,Date.now());
           if(securityBlock)throw new Error(securityBlock);
           const activityBlock=poolActivityFailure(p.q,activityLimits(candidate.source,cfg.watch,cfg.autoLp),Date.now());
           if(activityBlock)throw new Error(activityBlock);
           validateExitSettings(cfg.autoLp);
           if(cfg.autoLp.slPct<=0 || (cfg.autoLp.tpPct<=0&&cfg.autoLp.trailActivationPct<=0))throw new Error('required exit protection unavailable');
-          if (Date.now()<p.price.observedAt || Date.now()-p.price.observedAt>60_000) throw new Error('entry price expired before broadcast');
+          // A completed purchase fixes its cash basis. It does not need another
+          // simulated purchase funded from a now-depleted ETH balance.
+          if (!funded&&(Date.now()<p.price.observedAt || Date.now()-p.price.observedAt>60_000)) throw new Error('entry price expired before broadcast');
+          if (!funded&&(Date.now()<p.funding.observedAt || Date.now()-p.funding.observedAt>60_000)) throw new Error('funding preflight expired before broadcast');
           const session=riskStore.snapshot();
           if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('entry paused during execution');
+          }catch(error){throw new EntryEligibilityError((error as Error).message);}
+        },fundingComplete:()=>{funded=true;},receiptObserved:(block:number)=>{if(!Number.isSafeInteger(block)||block<lastReceiptBlock)throw Error('Entry receipt block regressed');lastReceiptBlock=block;},captureRollbackCash:()=>strictCashSnapshot(lastReceiptBlock),refreshActive:async()=>{
+          try{
+            assertControl();
+            const limits=activityLimits(candidate.source,cfg.watch,cfg.autoLp),now=Date.now();
+            if(now-(p.g?.observedAt??0)>=20_000){p.g=await gmgnToken(candidate.token,{holders:true});}
+            if(Date.now()-(p.q.observedAt??0)>=20_000){
+              const {qualifyCandidate}=await import('../chain/candidate.js');
+              const fresh=await qualifyCandidate(candidate.token,undefined,'usd',{...limits,now:Date.now(),expectedPoolId:p.q.v4.poolId});
+              if(!fresh||fresh.v4.poolId.toLowerCase()!==p.q.v4.poolId.toLowerCase()||fresh.quote!=='usd'||!Number.isFinite(fresh.liqUsd)||fresh.liqUsd<Math.max(cfg.autoLp.minLiqUsd,cfg.scan.minPoolLiqUsd))throw Error('Fresh exact-pool qualification unavailable');
+              p.q=fresh;
+            }
+            assertControl();strict.assertActive();
+          }catch(error){throw new EntryEligibilityError((error as Error).message);}
+        },assertCleanupActive:()=>{
+          // After a confirmed mint, dispose only the newly acquired leftover.
+          // Entry data expiry must not prevent settlement; operator stops still do.
+          const session=riskStore.snapshot();
+          if (!cfg.autoLp.enabled || cfg.autoLp.entryPaused || !session || session.paused || session.lossTriggered || !session.entries.some(e=>e.id===reservationId&&e.status==='reserved')) throw new Error('cleanup paused during execution');
         }};
-        const opened = p.mode === 'inrange'
-          ? await p.mint.openV4UsdgInRange(p.q.v4,amount,{widthSpacings:width,strict})
+        let opened;
+        try{opened = p.mode === 'inrange'||p.mode === 'asymmetric'
+          ? await p.mint.openV4UsdgInRange(p.q.v4,amount,{widthSpacings:width,asymmetric:p.mode==='asymmetric',strict})
           : await p.mint.openV4UsdgSingleSide(p.q.v4,amount,{strict});
+        }catch(error){
+          if(!(error instanceof EntryRolledBackError))throw error;
+          const after=await strictCashSnapshot(error.blockNumber);
+          if(after.blockNumber<error.cashBeforeRollback.blockNumber||error.cashBeforeRollback.blockNumber<lastReceiptBlock||after.usdg!==p.before.usdg)throw Error('Rollback cash inventory uncertain');
+          await strictInventory(riskStore.openPositions().map(r=>r.tokenId));
+          const cash=error.cashBeforeRollback,exitPrice=await freshEntryPrice();
+          const basisUsd=((p.before.eth+p.before.weth)-(cash.eth+cash.weth))*p.price.usd;
+          const realizedNetUsd=((after.eth+after.weth)-(cash.eth+cash.weth))*exitPrice.usd;
+          if(!Number.isFinite(basisUsd)||basisUsd<=0||!Number.isFinite(realizedNetUsd))throw Error('Rollback cash basis invalid');
+          return {rollback:{basisUsd,realizedNetUsd,blockNumber:error.blockNumber,receiptHashes:error.receiptHashes},reason:error.message};
+        }
         if (!opened.tokenId || opened.poolId.toLowerCase() !== p.q.v4.poolId.toLowerCase()) throw new Error('mint identity uncertain');
         if(!Number.isSafeInteger(opened.blockNumber)||opened.blockNumber!<=0)throw new Error('final entry receipt block unavailable');
         const after = await strictCashSnapshot(opened.blockNumber);
@@ -106,12 +163,15 @@ export async function maybeAutoLp(candidate: Candidate, verdict: Verdict | null)
         await strictInventory([...riskStore.openPositions().map(r=>r.tokenId),opened.tokenId]);
         return {opened,basisUsd};
       },
-      commit: (id,r) => riskStore.commitEntry(id,{tokenId:r.opened.tokenId!,basisUsd:r.basisUsd}),
+      commit: (id,r) => r.rollback?riskStore.commitEntryRollback(id,r.rollback):riskStore.commitEntry(id,{tokenId:r.opened!.tokenId!,basisUsd:r.basisUsd!}),
       fail: id => riskStore.failEntry(id),
     });
+    if(result.rollback)return {opened:false,reason:`entry cancelled; funding returned to ETH: ${result.reason}`,token:candidate.token,symbol:candidate.symbol,sizeEth,uncertain:false};
     return {opened:true,reason:'opened',token:candidate.token,symbol:candidate.symbol,sizeEth,result:result.opened};
   } catch (e) {
-    return skip(`entry blocked/uncertain: ${(e as Error).message.slice(0,180)}`);
+    const message=(e as Error).message;
+    const detail=message==='entries paused or session unavailable' ? (riskStore.entryBlockReason(cfg.autoLp.sizeUsd)??message) : message;
+    return {...skip(`entry blocked/uncertain: ${detail.slice(0,180)}`),uncertain:!!reservationId};
   }
 }
 

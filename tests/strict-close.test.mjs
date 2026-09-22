@@ -15,6 +15,7 @@ const transfer = new ethers.Interface(['event Transfer(address indexed from,addr
 // Only the I/O boundary is replaced: production close calldata, exact-amount
 // accounting, receipt checks and error propagation execute unchanged.
 function fixture(options = {}) {
+  let clockNow=Date.now();
   const calls = { sends: [], swaps: [], balanceBlocks: [], ledger: 0 };
   let burned = false;
   const balances = new Map([[TOKEN, 900719925474099312345n], [USDG, 100000000n]]);
@@ -51,7 +52,7 @@ function fixture(options = {}) {
     ethers: { ethers: { ...ethers, Contract } },
     '@uniswap/sdk-core': { default: {} }, '@uniswap/v4-sdk': { default: {} },
     '../../config.js': { C: { weth: WETH, v4PositionManager: POSM }, cfg: { chainId: 4663, lp: { autoSwapOnClose: true } } },
-    '../client.js': { provider, wallet: () => signer, overrides: async () => { options.onOverrides?.(); return {}; }, waitTx: async () => {
+    '../client.js': { provider, wallet: () => signer, overrides: async () => { options.onOverrides?.(); clockNow+=options.gasDelayMs??0; return {}; }, waitTx: async () => {
       if (options.waitFail) throw new Error('receipt timeout');
       burned = true;
       balances.set(TOKEN, tokenStart + 123456789012345678901n);
@@ -79,7 +80,7 @@ function fixture(options = {}) {
   const source = readFileSync(new URL('../src/chain/v4/close.ts', import.meta.url), 'utf8');
   const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } });
   const api = {};
-  vm.runInNewContext(outputText, { exports: api, require(name) { assert.ok(Object.hasOwn(dependencies, name), name); return dependencies[name]; }, setTimeout, clearTimeout }, { filename: 'close.ts' });
+  vm.runInNewContext(outputText, { Date:class extends Date {static now(){return clockNow}}, exports: api, require(name) { assert.ok(Object.hasOwn(dependencies, name), name); return dependencies[name]; }, setTimeout, clearTimeout }, { filename: 'close.ts' });
   return { api, calls, balances, tokenStart, burned: () => burned };
 }
 
@@ -165,4 +166,10 @@ test('stopping auto while gas overrides load prevents the initial burn broadcast
   }), (e) => e.broadcastPossible === false && /Auto stopped before burn/.test(e.message));
   assert.equal(f.calls.sends.length, 0);
   assert.equal(f.calls.swaps.length, 0);
+});
+
+test('a liquidation quote expiring during close preflight cannot authorize burn',async()=>{
+ const observedAt=Date.now();const f=fixture({gasDelayMs:61_000});
+ await assert.rejects(()=>f.api.closeV4PositionStrict('12','MAX_HOLD',{quoteObservedAt:observedAt}),e=>e.broadcastPossible===false&&/quote/i.test(e.message));
+ assert.equal(f.calls.sends.length,0);assert.equal(f.calls.swaps.length,0);
 });

@@ -1,10 +1,35 @@
 # Alexandria Robinhood Auto — bounded pilot
 
-This branch adds cash-basis trailing TP to the existing Robinhood LP Bot fork.
-It does not activate trading, fund a wallet, deploy to a server, or implement a
-full paper-trading engine. Tests use offline transaction/RPC boundaries.
+The existing Robinhood LP Bot fork uses cash-basis protection. On 2026-09-20,
+Chief approved replacing the original three-total-attempt cap with three reusable
+concurrent slots, plus timed exits, including the existing ASKR position.
+Code defaults do not enable trading or timers; production configuration requires
+explicit operator approval. Tests use offline transaction/RPC boundaries.
+
+## Hourly-delay removal deployment — 2026-09-20
+
+- Runtime `8d2ea09` deployed to Alexandria; service restarted at 05:19:53 UTC
+  (12:19:53 WIB). Auto remained enabled and the existing session was preserved.
+- Pre-stop wallet nonces matched (26 confirmed / 26 pending); no reserved,
+  closing, uncertain or latched-close workflow was present.
+- Root-only backup: `/var/backups/robinhood-lp-no-hourly-20260920/`.
+- All 188 tests and both TypeScript configurations passed on the server.
+  Independent review found no control blockers; obsolete setting-help text was removed.
+- Live readback: legacy `maxPerHour=0`, entries unpaused, entry gate ready,
+  HOTDOG #2987913 open and two slots free. This is a point-in-time snapshot,
+  not a promise that another pool will qualify. Status was delivered to Telegram.
+- Watch, Hunt and 30-second exit management restarted successfully. No manual
+  trade was forced; all normal screening, funding and risk checks remain required.
 
 ## Controls and limits
+
+Winner-timer exemption deployed as runtime `62433df` on 2026-09-20 at 12:24:36 UTC
+(19:24:36 WIB). All 193 server tests and both TypeScript checks passed; independent
+review found no blockers. Backup: `/var/backups/robinhood-lp-winner-timers-20260920/`.
+Confirmed/pending wallet nonces matched at 38/38 before stopping. No config or
+ledger migration was needed. Session history and the pre-existing entry pause
+(`Fresh liquidation quote unavailable`) were preserved; zero positions were open
+at deployment. Service restarted active; updated policy/status delivered to Telegram.
 
 - New sessions start paused. `/auto on` starts exit monitoring but leaves entries
   paused; `/auto resume` permits entries only after the protection checks pass.
@@ -20,16 +45,41 @@ full paper-trading engine. Tests use offline transaction/RPC boundaries.
   produce a much larger realized loss; these are bot triggers, not guaranteed stops.
 - `/auto session`: explicitly starts a new ledger only while auto is off and the
   previous session has no unresolved entries. Restarting the process does not reset it.
-- Hard pilot limits: at most three total attempts, three open positions, one attempt
-  per rolling hour, and $90 gross deployment reservations. Replacements count.
-  Actual entry costs count toward remaining capacity: three exact $30 trades may not
-  fit once gas is included. Reserve room for costs (e.g. roughly $29 per trade).
+- Hard pilot limits: at most three concurrent positions and $90 outstanding cost
+  basis. Chief approved removing the hourly entry delay on September 20; entries
+  remain serialized through the wallet lock. Reservations, open, closing and uncertain
+  entries occupy capacity. Only confirmed cash settlement or verified zero-spend
+  aborts free it. Closed/aborted records are never deleted. Distinct tokens are required across outstanding slots;
+  a previously closed token may requalify. Entry sizing is $29 to leave gas headroom.
+- Unrealized gains do not consume cost-basis capacity or force an exposure-cap sale.
+  There is no lifetime entry/turnover cap in this approved rotating mode.
 - Scanning and cash-basis exit management run around the clock while the service and
-  auto mode are on. The three-attempt/$90 session does **not** recycle closed slots;
-  it is a bounded 24/7 pilot, not an unlimited trading program.
+  auto mode are on. Settled slots are reusable, subject to screening, available
+  wallet funds and the unchanged cumulative loss circuit. A second screened entry
+  can follow a confirmed first entry without waiting an hour; pending or uncertain
+  execution still blocks further entries. The legacy `maxPerHour` config field is
+  retained for config compatibility only and no longer controls this pilot.
 - The -$15 session loss circuit uses settled cash plus fresh liquidation estimates.
   It pauses entries and latches closes, but cannot guarantee a maximum realized loss.
-- Review after two hours; this is an operator checkpoint, not an automatic timer.
+- Approved timed settings: `timedTpMin=120`, `timedTpPct=5`, `maxHoldMin=360`.
+  While trailing is not active and armed: after two hours, close at >= +5% fresh
+  estimated net cash PnL; after six hours, close regardless of PnL. Chief approved
+  exempting armed winners from both timers on September 20. Once a fresh observed
+  peak reaches +10%, active trailing manages the position with a 5pp giveback,
+  including beyond six hours and across restarts. SL and session-loss protection
+  still override. Disabling trailing restores timer eligibility; stored flags alone
+  do not exempt unprotected positions. Age uses the persisted original entry reservation time,
+  not process uptime. Existing positions receive the same policy. SL/trailing
+  have priority; maximum holding time is reported before timed profit if both are
+  first observed after expiry. A latched exit is never cleared by a rebound.
+- Fresh valuation is required even for a previously latched exit retry. Missing
+  quotes pause entries and warn; exit checks continue. The September 21 reliability
+  update adds explicitly classified data-pause recovery: three healthy samples
+  spanning at least 60 seconds, at least 20 seconds apart. A gap over 90 seconds,
+  failed health check or restart resets the streak. Recovery runs under the wallet
+  lock, verifies inventory/nonces/funding/fresh quotes and rechecks session risk and
+  operator controls. Operator, loss, configuration, uncertain-execution and legacy
+  unclassified pauses remain manual-only. Timers and stops are not guaranteed fills.
 - Compounding, automatic re-ranging, legacy OOR and fee-velocity exits are disabled
   for this bounded auto mode. Manual trading remains available when auto is off,
   no wallet operation is running and no uncertain execution needs reconciliation.
@@ -38,13 +88,39 @@ full paper-trading engine. Tests use offline transaction/RPC boundaries.
 
 `data/auto-risk.json` is the pilot's authoritative ledger, with immutable USD-valued
 entry cash debits, reservation IDs, owned NFT IDs, peak PnL, close intents and settlements.
-`/auto status` reports this ledger. Legacy `/ledger`, `/pnl` and profit cards are not
-the pilot's cash-accounting source; upstream LP-versus-HODL reporting is unchanged.
+`/auto status`, `/pnl` and the daily `/briefing` use this ledger. `/pnl` and the
+briefing include all recorded sessions, separately labeled from the current session.
+Realized PnL is settled net cash minus immutable entry cost, not today's ETH-valued
+cost or LP-versus-HODL. Legacy `/ledger` and profit cards remain separate.
+
+Close settlement now records `closedAt`. Historical times may only be backfilled
+from verified receipts (the stopped-bot `ops/close-time-probe.ts --apply` workflow).
+Unverified times make 24h coverage explicitly incomplete; stale/missing open marks
+are unavailable, never zero. A fee-only breakdown is unavailable separately and is
+not added again to net cash PnL. Reports are deterministic and do not need an LLM key.
+
+September 21 pause investigation: Kyber returned `service temporarily overloaded`
+for ASKR #2996973 on September 20 at 15:29, 15:31 and 15:32 UTC, and later again.
+The quote failure paused entries; session valuation then recorded `Missing fresh
+session valuation`. Exits continued and #2996973 settled successfully. This is a
+persistent safety pause, not a reporting loss or occupied slot. The reporting fix
+does not introduce automatic resume or bypass uncertain-execution/loss protection.
 
 Principal plus accrued fees are quoted for liquidation using pinned on-chain state,
 full-amount sell routes, swap slippage haircuts and a configured gas reserve. The
 estimate is not a guaranteed execution quote: removing the LP changes available
 liquidity, token taxes can matter, and prices can move between transactions.
+
+The September 21 diagnostics keep expected net exit value (before slippage haircut,
+after the same gas reserve) separate from buffered `netUsd`. All existing financial
+exit decisions still use buffered `netUsd`; additive metrics cannot weaken that
+protection. Reports distinguish actual settlement from the final pre-close estimate.
+Per-position monitoring records sampled in-range time and raw accrued-fee changes.
+The first sample is a baseline, not newly earned fees. Sampling gaps and restart
+intervals are unknown; displayed activity is not exact historical occupancy.
+Indicative fee USD allocations use the full-size route's average, not a separately
+executable fee sale or realized PnL. Historical positions are not backfilled with
+invented activity. Invalid optional diagnostics are unavailable, not financial zeroes.
 
 Strict mint and close preserve pre-existing token/USDG balances. Newly acquired
 surplus and withdrawn non-ETH assets are sold back to ETH. Final cash snapshots
@@ -104,6 +180,14 @@ then ranks **exact v4 pool** activity before costly on-chain qualification. Its
 traffic score is rules-only and does not treat token utility labels or token-wide
 volume as evidence that the chosen pool is busy. The chosen pool must be USDG;
 an ETH pool with higher historic fees does not displace an eligible USDG pool.
+The September 21 soft-ranking update prefers exact-pool activity observed on at
+least three eligible snapshots spanning five minutes, without a sampling gap over
+six minutes. It retains 30 minutes of bounded history; duplicate observations do
+not count. New/unknown pools remain eligible under the unchanged thresholds.
+Preference is applied before expensive qualification and again using the actual
+qualified pool before dispatch. Hunt alerts show volume and observation evidence,
+not a purported confidence score. These overlapping rolling-window snapshots are
+not independent flow buckets, proof of organic volume, or proof of a better strategy.
 The full fresh GMGN holder/security and exact-pool checks still run at entry.
 GMGN requests are serialized and paced, with a five-minute cooldown on rate-limit
 errors. Queued/stale or unavailable data blocks entry, not a safety bypass.
@@ -125,6 +209,54 @@ No configuration defaults enable auto or trailing. There is no LLM in the traili
 calculation; it is deterministic arithmetic.
 
 ## Verification
+
+### Pilot reliability deployment receipt — 2026-09-21 13:02 WIB
+
+- Tencent runtime commit `31630cd2e26647f6a94649e5ef1566e152d243a6`, including
+  implementation `3ee93e9` and independently reviewed qualification fix `bfa8833`.
+- Coordinator and VPS independently passed 242/242 tests, main and ops TypeScript
+  checks, and build. The final review's sole same-token ranking finding was closed.
+- Root-only backup: `/var/backups/robinhood-lp-pilot-reliability-20260921T0557/`.
+  Config, full entry records, session identity and cash accounting were compared
+  unchanged. Two new deployment documents initially hit an old root-owned directory;
+  its ownership was corrected and only those missing committed files restored.
+- Fresh preflight found the old pause already cleared, no open/unresolved positions,
+  confirmed/pending nonce 49/49, and 0.04337532394040858 native ETH. A temporary
+  maintenance pause protected deployment. Under the stopped-bot process lock,
+  fresh strict inventory, nonce, funding/return routes, gas, exit settings and
+  session loss checks passed before the explicitly approved operator resume.
+- Final status: monitoring ON, entries enabled, entryBlock null, three free slots,
+  unchanged $29 size / $90 outstanding basis / -$15 session loss circuit. All exit
+  parameters and screening gates are unchanged; qualifying candidates are still
+  required. Six historical attempts (five settled, one aborted) remain intact;
+  realized cash PnL remains +$5.97880352028352.
+- Telegram acknowledged both maintenance and resumed status messages, zero failures.
+  Service active/running, zero restarts; watch, hunt, management and briefing loops
+  started. Exact-pool history is writing live (512 bounded pool rows at verification).
+  No transaction was broadcast by the deployment checks and no entry was forced.
+- Typed outage recovery and new position metrics have offline behavioral coverage;
+  no live outage recovery or new position accrual is claimed by this receipt.
+  Existing Blockscout display enumeration still logs HTTP 403; strict entry inventory
+  checks passed independently and their fail-closed behavior was not relaxed.
+
+### Cash-report deployment receipt — 2026-09-21 11:04 WIB
+
+- Tencent Alexandria deployed runtime commit `26e17f1aeea8b086b29454959497a91b3bdabcca`.
+- VPS verification: 202/202 tests, main and ops TypeScript checks, and build passed.
+- Five historical close timestamps were matched against the reviewed exact NFT-burn
+  and final-sweep receipt list, then backfilled under the stopped-bot process lock.
+- Backup: `/var/backups/robinhood-lp-cash-reports-20260921/`. A deep comparison
+  verified that only timestamp/evidence metadata changed; cash amounts, session,
+  pause state and runtime config were preserved.
+- Confirmed cash ledger: five closes, three wins/two losses, realized
+  `+$5.978803520283524`; zero open/unresolved positions. At 11:03 WIB the rolling
+  24-hour result was `+$2.5635565103314484` across three closes. The original
+  07:04 WIB briefing window instead contained four closes totaling `+$7.571024835597114`.
+- Real `/pnl` handler and manual briefing runner each delivered a corrected message;
+  Telegram acknowledged both (two successes, zero failures). Scheduler remains 07:00 WIB.
+- Service active/running, zero restarts; watch, hunt and management loops started.
+  New entries remain paused pending operator direction. No trade was broadcast by
+  this deployment. Confirmed/pending wallet nonce was 49/49 before deployment.
 
 Run `npm test`, `npm run typecheck`, `npm run build`, and `git diff --check`.
 Offline tests exercise persisted restarts, caps, missing state, trailing examples,

@@ -19,6 +19,7 @@ import { send } from "./tg.js";
 import { esc } from "./format.js";
 import { logger } from "../util/log.js";
 import type { LedgerEntry } from "../types.js";
+import {buildCashReport} from '../radar/cash-report.js';
 
 const log = logger("briefing");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -275,6 +276,11 @@ function fallbackAnalysis(d: BriefData): string {
 
 // ── render ───────────────────────────────────────────────────────────────────
 export async function buildBriefing(): Promise<string> {
+  return buildCashReport('briefing');
+}
+
+/** Legacy manual-position report retained separately; not used by the auto pilot. */
+export async function buildLegacyBriefing(): Promise<string> {
   const d = await gather();
   const analysis = (await briefLlm(llmDataBlock(d))) || fallbackAnalysis(d);
   const { label } = wibParts();

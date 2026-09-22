@@ -24,7 +24,8 @@ import { WETH_ABI } from "../abis.js";
 import { ethUsd } from "../price.js";
 import { dataPath, readJson, writeJson } from "../../util/files.js";
 import { logger } from "../../util/log.js";
-import { validateEntryBudget, strictMintAmounts, type StrictEntryBudget } from '../../radar/entry-guard.js';
+import { validateEntryBudget, strictMintAmounts, EntryEligibilityError, EntryRolledBackError, type StrictEntryBudget } from '../../radar/entry-guard.js';
+import {asymmetricBudget,asymmetricRange} from './asymmetric.js';
 
 const { Ether, Token, Percent, CurrencyAmount } = sdkCore as any;
 const { Pool, Position, V4PositionManager } = v4sdk as any;
@@ -41,9 +42,10 @@ export interface V4OpenResult {
   depositEth: string;
   poolId: string;
   blockNumber?:number;
+  mode?:string;
 }
 
-type V4Dep = { depositWei: string; ts: number; poolId: string; fee: number; tickLower: number; tickUpper: number; mode: string; dep0?: string; dep1?: string };
+type V4Dep = { depositWei: string; ts: number; poolId: string; fee: number; tickLower: number; tickUpper: number; mode: string; entryStrategy?:string; dep0?: string; dep1?: string };
 
 export function saveV4Deposit(tokenId: string, rec: V4Dep): void {
   const d = readJson<Record<string, V4Dep>>(POS_FILE, {});
@@ -62,7 +64,7 @@ const NATIVE_GAS_BUFFER = ethers.parseEther("0.0003"); // keep some native for t
  * native balance and the sim reverts with empty data ("missing revert data"). Unwrap the
  * shortfall WETH → ETH first so native covers the deposit + gas.
  */
-async function ensureNativeEth(needWei: bigint, assertActive?:()=>void): Promise<void> {
+async function ensureNativeEth(needWei: bigint, assertActive?:()=>void,receiptObserved?:(blockNumber:number)=>void): Promise<void> {
   const w = wallet();
   const bal = await provider.getBalance(w.address);
   if (bal >= needWei) return;
@@ -77,7 +79,8 @@ async function ensureNativeEth(needWei: bigint, assertActive?:()=>void): Promise
   log.info(`unwrap ${ethers.formatEther(short)} WETH → native ETH (v4 requires native ETH)`);
   const gas = await overrides();
   assertActive?.();
-  await waitTx(await weth.withdraw!(short, gas), "v4-unwrap");
+  const rc=await waitTx(await weth.withdraw!(short, gas), "v4-unwrap");
+  if(receiptObserved){if(!rc||rc.status!==1||!Number.isSafeInteger(rc.blockNumber)||rc.blockNumber<=0)throw Error('Unwrap receipt unavailable');receiptObserved(rc.blockNumber);}
 }
 
 function buildSdkPool(token: string, decimals: number, symbol: string, pool: V4Pool) {
@@ -409,17 +412,18 @@ export function balancedEthForHeldToken(token: string, meta: { decimals: number;
 }
 
 /** Approve an ERC20 for the v4 PositionManager via Permit2 (ERC20→Permit2, Permit2→POSM). */
-export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigint;assertActive():void}): Promise<void> {
+export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigint;assertActive():void;refreshActive?():Promise<void>;receiptObserved?(blockNumber:number):void}): Promise<void> {
+  const confirmed=(rc:ethers.TransactionReceipt|null)=>{if(strict?.receiptObserved){if(!rc||rc.status!==1||!Number.isSafeInteger(rc.blockNumber)||rc.blockNumber<=0)throw Error('Permit approval receipt unavailable');strict.receiptObserved(rc.blockNumber);}};
   const w = wallet();
   const erc = new ethers.Contract(tokenAddr, ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"], w);
   if ((await erc.allowance!(w.address, PERMIT2)) < (strict?.amount ?? (1n << 200n))) {
-    const gas=await overrides();strict?.assertActive();
-    await waitTx(await erc.approve!(PERMIT2, strict?.amount ?? ethers.MaxUint256, gas), "v4-approve-permit2");
+    await strict?.refreshActive?.();const gas=await overrides();strict?.assertActive();
+    confirmed(await waitTx(await erc.approve!(PERMIT2, strict?.amount ?? ethers.MaxUint256, gas), "v4-approve-permit2"));
   }
   const permit2 = new ethers.Contract(PERMIT2, ["function approve(address token,address spender,uint160 amount,uint48 expiration)"], w);
   const exp = Math.floor(Date.now() / 1000) + 30 * 86400;
-  const gas=await overrides();strict?.assertActive();
-  await waitTx(await permit2.approve!(tokenAddr, C.v4PositionManager!, strict?.amount ?? (1n << 160n) - 1n, exp, gas), "v4-permit2");
+  await strict?.refreshActive?.();const gas=await overrides();strict?.assertActive();
+  confirmed(await waitTx(await permit2.approve!(tokenAddr, C.v4PositionManager!, strict?.amount ?? (1n << 160n) - 1n, exp, gas), "v4-permit2"));
 }
 
 /**
@@ -430,9 +434,10 @@ export async function approveViaPermit2(tokenAddr: string, strict?:{amount:bigin
 export async function openV4UsdgInRange(
   pool: V4Pool,
   amountEthStr: string,
-  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number; strict?:StrictEntryBudget },
+  opts?: { increaseTokenId?: string; range?: { tickLower: number; tickUpper: number }; widthSpacings?: number; asymmetric?:boolean; strict?:StrictEntryBudget },
 ): Promise<V4OpenResult & { swapHash?: string; swappedPct: number }> {
   const strict=opts?.strict;
+  if(opts?.asymmetric&&(opts.increaseTokenId||opts.range))throw new Error('Asymmetric mode opens new positions only');
   if (strict) {
     validateEntryBudget(pool,amountEthStr,strict);
     if (opts?.increaseTokenId || opts?.range) throw new Error('strict pilot prohibits top-ups');
@@ -455,7 +460,8 @@ export async function openV4UsdgInRange(
   const half = Math.max(1, Math.round((opts?.widthSpacings ?? 8) / 2));
   const anchor0 = Math.floor(pool.tick / sp) * sp;
   const fracC1 = Math.min(0.95, Math.max(0.05, swapFractionV4(pool.tick, anchor0 - half * sp, anchor0 + half * sp)));
-  const ethForC1 = (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
+  const asymmetric=opts?.asymmetric?asymmetricBudget(pool,c0.toLowerCase()===USDG.toLowerCase(),total):undefined;
+  const ethForC1 = asymmetric?.amount1 ?? (total * BigInt(Math.round(fracC1 * 1e6))) / 1_000_000n;
   const ethForC0 = total - ethForC1;
 
   const bal = async (a: string,block?:number): Promise<bigint> => {
@@ -463,15 +469,18 @@ export async function openV4UsdgInRange(
     return strict ? await read : await read.catch(() => 0n);
   };
   const before = strict ? await Promise.all([bal(c0),bal(c1)]) : null;
-  await ensureNativeEth(total + NATIVE_GAS_BUFFER,strict?.assertActive);
+  let mintBroadcastPossible=false;
+  try {
+  await ensureNativeEth(total + NATIVE_GAS_BUFFER,strict?.assertActive,strict?.receiptObserved);
   let fundingBlock:number|undefined;
 
   // acquire each side from ETH via Kyber (best route across every DEX/tier/hook).
   let swapHash: string | undefined;
   const acquire = async (addr: string, ethAmt: bigint) => {
     if (ethAmt < ethers.parseEther("0.00002")) return;
+    await strict?.refreshActive?.();
     strict?.assertActive();
-    const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(addr), ethAmt, strict ? {assertActive:strict.assertActive} : undefined);
+    const k = await kyberSwap(KYBER_NATIVE, ethers.getAddress(addr), ethAmt, strict ? {assertActive:strict.assertActive,receiptObserved:strict.receiptObserved} : undefined);
     if (!k || k.amountOut <= 0n) throw new Error(`failed to buy ${addr.toLowerCase() === USDG.toLowerCase() ? "USDG" : "token"} via Kyber`);
     if (strict) {
       if(!Number.isSafeInteger(k.blockNumber)||k.blockNumber!<=0)throw new Error('strict funding receipt unavailable');
@@ -493,6 +502,7 @@ export async function openV4UsdgInRange(
   const buyUsdgWei = strict ? ethForUsdg : ethForUsdg > heldUsdgEthWei ? ethForUsdg - heldUsdgEthWei : 0n;
   await acquire(tokAddr, ethForTok);
   await acquire(usdgAddr, buyUsdgWei); // 0 if we already hold enough USDG → no swap
+  strict?.fundingComplete?.();
 
   let [bal0, bal1] = await Promise.all([bal(c0,fundingBlock), bal(c1,fundingBlock)]);
   if (strict && before) {
@@ -501,8 +511,9 @@ export async function openV4UsdgInRange(
   }
   if (bal0 <= 0n || bal1 <= 0n) throw new Error(`balance ${m0.symbol}/${m1.symbol} 0 after swap`);
 
-  await approveViaPermit2(c0,strict?{amount:bal0,assertActive:strict.assertActive}:undefined);
-  await approveViaPermit2(c1,strict?{amount:bal1,assertActive:strict.assertActive}:undefined);
+  await approveViaPermit2(c0,strict?{amount:bal0,assertActive:strict.assertActive,refreshActive:strict.refreshActive,receiptObserved:strict.receiptObserved}:undefined);
+  await approveViaPermit2(c1,strict?{amount:bal1,assertActive:strict.assertActive,refreshActive:strict.refreshActive,receiptObserved:strict.receiptObserved}:undefined);
+  await strict?.refreshActive?.();
 
   // RE-READ the pool AFTER the buys (they move the price, especially the thin token side) and
   // re-anchor the range on the FRESH tick. Building against the stale discovery price forced a big
@@ -525,8 +536,9 @@ export async function openV4UsdgInRange(
   const livePool = new Pool(cur0, cur1, pool.fee, pool.tickSpacing, pool.poolKey.hooks, liveSqrt.toString(), liveLiq.toString(), liveTick);
   // INCREASE mode: reuse the EXISTING position's range (must match the NFT exactly). Open mode: fresh anchor.
   const anchor = Math.floor(liveTick / sp) * sp;
-  const tickLower = opts?.range ? opts.range.tickLower : anchor - half * sp;
-  const tickUpper = opts?.range ? opts.range.tickUpper : anchor + half * sp;
+  const freshAsymmetric=opts?.asymmetric?asymmetricRange({sqrtPriceX96:liveSqrt,tick:liveTick,tickSpacing:sp},usdgIsC0):undefined;
+  const tickLower = freshAsymmetric?.tickLower ?? (opts?.range ? opts.range.tickLower : anchor - half * sp);
+  const tickUpper = freshAsymmetric?.tickUpper ?? (opts?.range ? opts.range.tickUpper : anchor + half * sp);
 
   // Tight 1% buffer — safe now that state is fresh (re-read → mint is milliseconds); staticCall guards.
   // INCREASE on an existing (often volatile / high-fee, e.g. 10%) pool: the price can move between
@@ -562,6 +574,7 @@ export async function openV4UsdgInRange(
   }
   const gas=await overrides();
   strict?.assertActive();
+  mintBroadcastPossible=true;
   const tx = await w.sendTransaction({ to: C.v4PositionManager!, data: calldata, value: BigInt(value), ...gas });
   const rc = await waitTx(tx, "v4-mint");
   const tokenId = opts?.increaseTokenId ?? tokenIdFromReceipt(rc!);
@@ -581,6 +594,7 @@ export async function openV4UsdgInRange(
       tickLower,
       tickUpper,
       mode: "inrange",
+      entryStrategy: opts?.asymmetric?'asymmetric':undefined,
       dep0: ((prev?.dep0 ? BigInt(prev.dep0) : 0n) + add0).toString(),
       dep1: ((prev?.dep1 ? BigInt(prev.dep1) : 0n) + add1).toString(),
     });
@@ -591,8 +605,9 @@ export async function openV4UsdgInRange(
       const remaining=(await bal(addr,finalBlock))-original;
       if (remaining<0n) throw new Error('strict mint consumed pre-held tokens');
       if (remaining>0n) {
-        strict.assertActive();
-        const swept=await kyberSwap(addr,KYBER_NATIVE,remaining,{assertActive:strict.assertActive});
+        const assertCleanup=strict.assertCleanupActive??strict.assertActive;
+        assertCleanup();
+        const swept=await kyberSwap(addr,KYBER_NATIVE,remaining,{assertActive:assertCleanup});
         if (!swept || swept.amountOut<=0n || !Number.isSafeInteger(swept.blockNumber) || swept.blockNumber!<finalBlock!) throw new Error('strict entry token refund uncertain');
         finalBlock=swept.blockNumber;
       }
@@ -600,7 +615,27 @@ export async function openV4UsdgInRange(
     }
   } else await sweepLeftoverToEth([{ addr: c0, dec: m0.decimals }, { addr: c1, dec: m1.decimals }]).catch(() => undefined);
   log.info(`${opts?.increaseTokenId ? "increase" : "open"} v4 USDG in-range #${tokenId} ${m0.symbol}/${m1.symbol} fee ${pool.fee / 10000}% ${opts?.increaseTokenId ? "+" : ""}${amountEthStr}Ξ`);
-  return { tokenId, txHash: tx.hash, swapHash, swappedPct: 100, fee: pool.fee, tickLower, tickUpper, depositEth: amountEthStr, poolId: pool.poolId, blockNumber:finalBlock };
+  return { tokenId, txHash: tx.hash, swapHash, swappedPct: 100, fee: pool.fee, tickLower, tickUpper, depositEth: amountEthStr, poolId: pool.poolId, blockNumber:finalBlock,mode:opts?.asymmetric?'asymmetric':'inrange' };
+  } catch(error) {
+    // Only a known pre-send eligibility rejection is recoverable here. A send,
+    // receipt, balance-read, simulation or post-mint failure stays uncertain.
+    if(!strict||!before||mintBroadcastPossible||!(error instanceof EntryEligibilityError)||!strict.assertCleanupActive||!strict.captureRollbackCash)throw error;
+    const cashBeforeRollback=await strict.captureRollbackCash();
+    let block=0;const hashes:string[]=[];
+    for(const [addr,original] of [[c0,before[0]!],[c1,before[1]!]] as const){
+      const amount=(await bal(addr))-original;
+      if(amount<0n)throw Error('Entry rollback would consume pre-held inventory');
+      if(amount>0n){strict.assertCleanupActive();const result=await kyberSwap(addr,KYBER_NATIVE,amount,{assertActive:strict.assertCleanupActive});
+        if(!result||result.amountOut<=0n||!Number.isSafeInteger(result.blockNumber)||result.blockNumber!<=0)throw Error('Entry rollback receipt uncertain');
+        block=Math.max(block,result.blockNumber!);hashes.push(result.tx);
+      }
+      if(await bal(addr,block||undefined)!==original)throw Error('Entry rollback inventory mismatch');
+    }
+    // No swaps means there was no funded recovery to attest; retain the original
+    // error and conservative reservation rather than guessing a zero cash loss.
+    if(!block)throw error;
+    throw new EntryRolledBackError(error.message,block,hashes,cashBeforeRollback);
+  }
 }
 
 /**
@@ -645,9 +680,9 @@ export async function increaseV4Position(tokenId: string, amountEthStr: string):
 }
 
 /**
- * SINGLE-SIDE USDG on a token/USDG v4 pool: park ONLY USDG (no token), range on the side that keeps
- * the position 100% USDG until the token PUMPS into range (rug-safe — if the token dumps you keep
- * your USDG). USDG=currency0 → range ABOVE tick (fromAmount0); USDG=currency1 → range BELOW tick
+ * SINGLE-SIDE USDG on a token/USDG v4 pool: park ONLY USDG below USDG-per-token spot.
+ * A token decline enters the range and progressively converts USDG to token; this is NOT rug-safe.
+ * USDG=currency0 → range ABOVE tick (fromAmount0); USDG=currency1 → range BELOW tick
  * (fromAmount1). Funds the USDG side entirely from the ETH budget via Kyber.
  */
 export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, opts?:{strict?:StrictEntryBudget}): Promise<V4OpenResult & { swapHash?: string }> {
@@ -772,8 +807,9 @@ export async function openV4UsdgSingleSide(pool: V4Pool, amountEthStr: string, o
     const remaining=BigInt(await usdgC.balanceOf!(w.address,{blockTag:finalBlock}))-held0;
     if (remaining<0n) throw new Error('strict mint consumed preheld USDG');
     if (remaining>0n) {
-      strict.assertActive();
-      const swept=await kyberSwap(usdgAddr,KYBER_NATIVE,remaining,{assertActive:strict.assertActive});
+      const assertCleanup=strict.assertCleanupActive??strict.assertActive;
+      assertCleanup();
+      const swept=await kyberSwap(usdgAddr,KYBER_NATIVE,remaining,{assertActive:assertCleanup});
       if (!swept || swept.amountOut<=0n || !Number.isSafeInteger(swept.blockNumber) || swept.blockNumber!<finalBlock!) throw new Error('strict USDG refund uncertain');
       finalBlock=swept.blockNumber;
     }

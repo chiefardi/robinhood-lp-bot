@@ -15,6 +15,7 @@ import v4sdk from "@uniswap/v4-sdk";
 import { STATEVIEW_ABI, V4_POSM_ABI } from "./abis.js";
 import { NATIVE, computePoolId } from "./poolkey.js";
 import { freshEthUsd } from "../fresh-price.js";
+import type {Valuation} from '../../radar/range-productivity.js';
 
 const { Ether, Token } = sdkCore as any;
 const { Pool, Position } = v4sdk as any;
@@ -25,7 +26,7 @@ const MAX_AGE_MS = 60_000;
 const MAX_POSITION_USD = 1_000_000; // fail closed on corrupted/extreme farming-position values
 const ERC20_META_ABI = ["function decimals() view returns (uint8)", "function symbol() view returns (string)"];
 
-export interface V4ExitQuote { netUsd: number; observedAt: number; blockNumber: number }
+export interface V4ExitQuote extends Valuation { netUsd: number; observedAt: number; blockNumber: number }
 interface QuoteBlock { number: number; timestamp: number; hash: string | null }
 interface ContractRead {
   address: string; abi: readonly string[]; functionName: string; args: unknown[]; blockTag: number;
@@ -124,22 +125,26 @@ export function createV4ExitQuoter(d: V4ExitQuoteDependencies): (tokenId: string
     });
     const pool = new Pool(currencies[0], currencies[1], fee, tickSpacing, NATIVE, sqrt.toString(), "0", tick);
     const position = new Position({pool, liquidity: liquidity.toString(), tickLower, tickUpper});
-    const amounts = [position.amount0, position.amount1].map((principal, i) => {
+    const assets = [position.amount0, position.amount1].map((principal, i) => {
       const feeGrowth = (uint(growth[i], 256, "fee growth") - uint(posInfo[i + 1], 256, "last fee growth")) & MASK256;
       const fees = (feeGrowth * liquidity) >> 128n;
       const amount = uint(principal.quotient.toString(), 256, "principal") + fees;
       requireValue(amount <= MAX_DELTA, "implausible token amount");
-      return amount;
+      const meta=i===0?meta0:meta1;
+      return {address:i===0?currency0:currency1,...meta,principalRaw:principal.quotient.toString(),feesRaw:fees.toString(),indicativeFeeUsd:0};
     });
+    const amounts=assets.map(a=>BigInt(a.principalRaw)+BigInt(a.feesRaw));
     requireValue(amounts.some(a => a > 0n), "zero asset amounts");
     const price = await d.ethReference();
     requireValue(Number.isFinite(price.usd) && price.usd > 0 && price.usd < MAX_POSITION_USD, "ETH/USD");
     fresh(price.observedAt, d.now(), "ETH/USD");
     const timestamps = [block.timestamp * 1000, price.observedAt];
+    const expectedLegValues:number[]=[0,0];
     const legValues = await Promise.all([currency0, currency1].map(async (currency, i) => {
       const amount = amounts[i]!;
       if (amount === 0n) return 0;
       let ethAmount = amount;
+      let expectedEthAmount=amount;
       if (currency !== NATIVE && currency !== weth) {
         const quote = await d.sellQuote(currency, amount);
         requireValue(quote, "no sell route");
@@ -151,9 +156,15 @@ export function createV4ExitQuoter(d: V4ExitQuoteDependencies): (tokenId: string
         requireValue(rawOut > 0n, "empty route output");
         // Round the haircut UP to a basis point, then output DOWN to wei.
         ethAmount = rawOut * BigInt(10_000 - Math.ceil(d.slippagePct * 100)) / 10_000n;
+        expectedEthAmount=rawOut;
       }
       const usd = Number(ethers.formatEther(ethAmount)) * price.usd;
       requireValue(Number.isFinite(usd) && usd >= 0 && usd < MAX_POSITION_USD, "implausible leg USD");
+      const expectedUsd=Number(ethers.formatEther(expectedEthAmount))*price.usd;
+      requireValue(Number.isFinite(expectedUsd)&&expectedUsd>=0&&expectedUsd<MAX_POSITION_USD,'implausible expected leg USD');
+      expectedLegValues[i]=expectedUsd;
+      // Indicative allocation at the full-size route average, NOT a fee-only route.
+      assets[i]!.indicativeFeeUsd=expectedUsd*Number(BigInt(assets[i]!.feesRaw))/Number(amount);
       return usd;
     }));
     // Guard against an orphaned snapshot and requests whose latency exhausted freshness.
@@ -163,7 +174,12 @@ export function createV4ExitQuoter(d: V4ExitQuoteDependencies): (tokenId: string
     fresh(observedAt, d.now(), "completed quote");
     const grossUsd = legValues.reduce((sum, usd) => sum + usd, 0);
     requireValue(Number.isFinite(grossUsd) && grossUsd < MAX_POSITION_USD, "implausible total USD");
-    return {netUsd: Math.max(0, grossUsd - d.exitCostBufferUsd), observedAt, blockNumber: block.number};
+    const expectedGross=expectedLegValues.reduce((sum,usd)=>sum+usd,0);
+    requireValue(Number.isFinite(expectedGross)&&expectedGross<MAX_POSITION_USD,'implausible expected total USD');
+    return {netUsd: Math.max(0, grossUsd - d.exitCostBufferUsd), observedAt, blockNumber: block.number,
+      tokenId,poolId,expectedNetUsd:Math.max(0,expectedGross-d.exitCostBufferUsd),
+      slippageHaircutUsd:Math.max(0,expectedGross-grossUsd),gasReserveUsd:d.exitCostBufferUsd,
+      inRange:tick>=tickLower&&tick<tickUpper,assets:assets as Valuation['assets']};
   };
 }
 

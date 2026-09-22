@@ -1,6 +1,8 @@
 import { RiskStore, PILOT_LIMITS, validateExitSettings, type ExitSettings } from '../radar/auto-risk.js';
-interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number}
-interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean}
+import {summarizeCash,positionObservationLines,reportChunks} from '../radar/cash-report.js';
+import {esc} from './format.js';
+interface AutoSettings extends ExitSettings {enabled:boolean;entryPaused:boolean;sizeUsd:number;compound:boolean;oorAction:string;closeOor:boolean;volFadeX:number;minFeePerHourUsd:number;manageSec:number;mode?:string}
+interface Controls {store:RiskStore;persist:()=>void;start:()=>void;stop:()=>void;send:(text:string)=>Promise<unknown>;walletBusy:()=>boolean;checkFunding:()=>Promise<void>}
 function ready(a:AutoSettings):void {
   validateExitSettings(a);
   if(a.slPct<=0 || (a.tpPct<=0&&a.trailActivationPct<=0))throw new Error('Configure hard SL and either fixed TP or trailing TP first');
@@ -17,7 +19,7 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     if(cmd==='session'){
       if(a.enabled||d.walletBusy())throw new Error('Stop auto and wait for wallet activity before starting a new session');
       d.store.startSession();a.entryPaused=true;d.persist();
-      await d.send('New pilot session created, entries PAUSED. Limits: 3 total entries (including replacements), 1/hour, $90 gross deployment, -$15 session loss circuit. Auto remains OFF.');return;
+      await d.send('New pilot session created, entries PAUSED. Limits: 3 concurrent positions with reusable settled slots, no hourly entry delay, one wallet workflow at a time, $90 outstanding cost basis, -$15 cumulative session loss circuit. Auto remains OFF.');return;
     }
     if(cmd==='pause'){
       d.store.pauseEntries();a.entryPaused=true;d.persist();
@@ -31,6 +33,12 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     }
     if(cmd==='resume'){
       ready(a);if(!a.enabled)throw new Error('Start exit monitoring with /auto on first');
+      const before=d.store.snapshot();
+      await d.checkFunding();
+      if(d.walletBusy())throw new Error('Wallet operation started during funding check');
+      ready(a);if(!a.enabled)throw new Error('Monitoring stopped during funding check');
+      const after=d.store.snapshot();
+      if(before?.id!==after?.id||before?.pauseRevision!==after?.pauseRevision)throw new Error('Pause changed during funding check; explicit resume required');
       d.store.resumeEntries();a.entryPaused=false;d.persist();
       await d.send('Entries RESUMED, subject to persistent session caps, mandatory GMGN checks and exact-pool verification. Real funds may be spent.');return;
     }
@@ -54,20 +62,38 @@ export async function riskAutoCommand(arg:string,a:AutoSettings,d:Controls):Prom
     if(cmd==='oor'){throw new Error('OOR auto-close is disabled in the pilot; single-sided parked positions begin out of range');}
     const s=d.store.snapshot();
     const entries=s?.entries??[];
-    const used=entries.reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
-    const realized=entries.filter(e=>e.status==='closed').reduce((n,e)=>n+(e.realizedNetUsd??0)-(e.basisUsd??0),0);
+    const occupied=entries.filter(e=>e.status!=='closed'&&e.status!=='aborted');
+    const used=occupied.reduce((n,e)=>n+Math.max(e.sizeUsd,e.basisUsd??0),0);
+    const block=d.store.entryBlockReason(a.sizeUsd);
+    const realized=summarizeCash(d.store.reportingSnapshot()).session.pnlUsd;
     const lines=[
-      `Alexandria Auto — ${a.enabled?'monitoring ON':'OFF'}; entries ${a.entryPaused||s?.paused?'PAUSED':'enabled'}`,
+      `Alexandria Auto — ${a.enabled?'monitoring ON':'OFF'}; entries ${a.entryPaused||s?.paused?'PAUSED':block?'BLOCKED':'enabled'}`,
       `Session: ${s?s.id:'not initialized'}`,
-      `Size: $${a.sizeUsd}; ${entries.length}/${PILOT_LIMITS.maxEntries} total entries; 1/hour; gross $${used.toFixed(2)}/$90; loss circuit -$15.`,
+      `Size: $${a.sizeUsd}; ${occupied.length}/${PILOT_LIMITS.maxOpen} occupied slots; ${Math.max(0,PILOT_LIMITS.maxOpen-occupied.length)} free; no hourly entry delay; outstanding basis $${used.toFixed(2)}/$90; cumulative loss circuit -$15.`,
+      `New-entry strategy: ${a.mode==='asymmetric'?'two-sided asymmetric, -20% / +10% USDG per token target (tick-rounded); existing positions unchanged':a.mode==='inrange'?'two-sided centered':'single-sided quote asset below token spot'}.`,
+      'One wallet workflow at a time; every entry needs fresh screening and confirmed accounting.',
+      `History: ${entries.length} attempts retained; settled slots reusable. ${block?'Entry gate: '+block:'Entry gate: ready (screening still required)'}.`,
       `Hard SL: ${a.slPct>0?'-'+a.slPct+'%':'off'}; fixed TP: ${a.tpPct>0?'+'+a.tpPct+'%':'off'}; trailing: ${a.trailActivationPct>0?'+'+a.trailActivationPct+'% / '+a.trailGivebackPct+'pp':'off'}.`,
-      `Realized session cash PnL: $${realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
+      `Timed TP: ${(a.timedTpMin??0)>0?'after '+a.timedTpMin+'m at >= +'+a.timedTpPct+'% net':'off'}; maximum hold: ${(a.maxHoldMin??0)>0?a.maxHoldMin+'m':'off'}.`,
+      'Both timers apply only while trailing is not active and armed. Armed winners keep running; SL and session-loss protection remain active.',
+      `Realized session cash PnL: ${realized==null?'unavailable':'$'+realized.toFixed(2)}. Immutable cash basis, not LP-versus-HODL.`,
       ...(s?.pauseReason?[`Pause: ${s.pauseReason}`]:[]),
-      ...entries.map(e=>`#${e.tokenId??'pending'} ${e.status}: basis ${e.basisUsd==null?'unknown':'$'+e.basisUsd.toFixed(2)}, peak ${e.peakPct==null?'unknown':e.peakPct.toFixed(2)+'%'}, ${e.closeReason??'no exit latched'}`),
+      `Pause classification: ${s?.pauseKind??'legacy/unclassified (manual resume only)'}; revision ${s?.pauseRevision??'legacy'}. ${d.store.recoveryStatus()}`,
+      ...[...occupied,...entries.filter(e=>!occupied.includes(e)).slice(-5)].map(e=>[
+        `#${e.tokenId??'pending'} ${e.status}: basis ${e.basisUsd==null?'unknown':'$'+e.basisUsd.toFixed(2)}, peak ${e.peakPct==null?'unknown':e.peakPct.toFixed(2)+'%'}, ${e.closeReason??'no exit latched'}`,
+        ...positionObservationLines(e),
+        ...(e.status==='open'?[
+          `Trailing ${e.armed&&a.trailActivationPct>0?'ARMED; exit at '+((e.peakPct??0)-a.trailGivebackPct).toFixed(2)+'% net':'not armed'}.`,
+          ...(e.armed&&a.trailActivationPct>0?['Timers bypassed: trailing manages this winner; any previously latched exit remains binding.']:[
+            ...((a.timedTpMin??0)>0?[`Timed TP eligible from ${new Date(e.at+a.timedTpMin!*60_000).toISOString()} at >= +${a.timedTpPct}% net unless trailing arms.`]:[]),
+            ...((a.maxHoldMin??0)>0?[`Maximum hold deadline ${new Date(e.at+a.maxHoldMin!*60_000).toISOString()} unless trailing arms.`]:[]),
+          ]),
+        ]:[]),
+      ].join('\n')),
       'Quotes include uncollected fees, swap haircuts and a gas reserve. Settlement can differ. Polling may miss spikes.',
       '/auto session · /auto trail 10 5 · /auto sl 10 · /auto on · /auto resume · /auto pause · /auto off',
-      'Review after 2 hours. No automatic re-range or compounding. Unknown executions require reconciliation.',
+      'Timed exits require fresh quotes; deadlines are not guaranteed fills. No automatic re-range or compounding. Unknown executions require reconciliation.',
     ];
-    await d.send(lines.join('\n'));
+    for(const chunk of reportChunks(lines.map(esc).join('\n')))await d.send(chunk);
   }catch(e:any){await d.send(`Auto unchanged or paused: ${String(e?.message??e).replace(/[<>&]/g,'')}`);}
 }

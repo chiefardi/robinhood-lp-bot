@@ -10,6 +10,14 @@ import type { NewTokenAlert, OutOfRangeAlert } from "../feed/monitor.js";
 import type { ScreenResult } from "../radar/screen.js";
 import type { QualifiedPool } from "../chain/candidate.js";
 import type { AutoCloseInfo, RebalanceInfo, CompoundInfo } from "../radar/automanage.js";
+import {formatActivityCoverage} from '../radar/fast-hunt.js';
+
+/** One alert for a newly uncertain reservation, not for ordinary screening rejections. */
+export async function notifyAutoLpFailure(r:AutoLpResult):Promise<void> {
+  if(!r.uncertain)return;
+  // Avoid forwarding arbitrary RPC errors/URLs, which can contain credentials.
+  await send(`⚠️ <b>Auto entry paused: reconciliation required</b>\n${esc(r.symbol)} · <code>${esc(r.token)}</code>\nAn entry attempt failed after reservation. Funds may or may not have moved. No automatic retry will occur until the transaction record is reconciled. Check /auto status.`);
+}
 
 /** Render an LLM/GMGN radar verdict as message lines (empty if no verdict). */
 function radarLines(v: Verdict | null): string[] {
@@ -117,12 +125,13 @@ export async function notifyCandidate(r: ScreenResult, pool: QualifiedPool): Pro
     `${padR("liq pool", 9)} $${(pool.liqUsd / 1000).toFixed(1)}k`,
     `${padR("mcap", 9)} ${fmtMcap(t.marketCap)} · turnover ${turnover}`,
     `${padR("type", 9)} ${r.kind} · community ${r.community}`,
-    `${padR("score", 9)} ${r.score}/100 · FOMO ${r.fomo}/100`,
+    `${padR("pool m5",9)} ${pool.vol5m==null?'unknown':'$'+pool.vol5m.toFixed(0)} · h1 ${pool.volH1==null?'unknown':'$'+pool.volH1.toFixed(0)}`,
+    formatActivityCoverage(pool.activity),
   ];
   await send(
     [
       `🎯 <b>LP CANDIDATE</b> · ${tokenEmoji(t.symbol)} <b>${esc(t.symbol)}</b> ${verd}`,
-      `<i>passed screening + active transactions + 3-5% pool fee</i>`,
+      `<i>initial screening passed; final auto-entry checks still apply</i>`,
       pre(T.join("\n")),
       r.thesis ? `🧠 <i>${esc(r.thesis)}</i>` : "",
       r.flags.length ? `🚩 ${esc(r.flags.slice(0, 4).join(" · "))}` : "",
@@ -149,8 +158,8 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
   const res = r.result;
   await send(
     [
-      `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange" ? "🎯" : "🛡"}`,
-      `Automatically opened ${r.sizeEth}Ξ single-sided (${esc(res.side ?? "park quote asset")})`,
+      `🤖 <b>AUTO-LP</b> · ${tokenEmoji(r.symbol)} <b>${esc(r.symbol)}</b> #${res.tokenId ?? "?"} ${res.mode === "inrange"||res.mode==='asymmetric' ? "🎯" : "🛡"}`,
+      `Automatically opened ${r.sizeEth}Ξ ${res.mode==='asymmetric'?'two-sided asymmetric (-20% / +10% USDG per token target; tick-rounded)':res.mode==='inrange'?'two-sided in-range':`single-sided (${esc(res.side ?? "park quote asset")})`}`,
       `${res.entryMcap ? `entry MCAP ${fmtMcap(res.entryMcap)} · ` : ""}range tick ${res.tickLower}..${res.tickUpper}`,
       res.swapHash ? `swap: <a href="${explorerTx(res.swapHash)}">tx</a> · mint: <a href="${explorerTx(res.txHash)}">tx</a>` : `mint: <a href="${explorerTx(res.txHash)}">tx</a>`,
       `<i>Check /list · close manually at any time</i>`,
@@ -162,7 +171,7 @@ export async function notifyAutoLp(r: AutoLpResult): Promise<void> {
 export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
   const emo = i.reason === "TP" ? "🎯💰" : i.reason === "SL" ? "🛑" : i.reason === "VFADE" ? "📉" : i.reason === "FVLOW" ? "🐌" : "🚪";
   const label =
-    i.reason === "TRAIL" ? "TRAILING PROFIT" : i.reason === "SESSION" ? "SESSION LOSS LIMIT" : i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
+    i.reason === "TIME_TP" ? "TIMED TAKE PROFIT" : i.reason === "MAX_HOLD" ? "MAXIMUM HOLD TIME" : i.reason === "TRAIL" ? "TRAILING PROFIT" : i.reason === "SESSION" ? "SESSION LOSS LIMIT" : i.reason === "TP" ? "TAKE PROFIT" : i.reason === "SL" ? "STOP LOSS" : i.reason === "VFADE" ? "VOLUME FADE" : i.reason === "FVLOW" ? "INACTIVE FEES (slot rotation)" : "OUT OF RANGE";
   const pnl =
     i.pnlPct != null
       ? `${i.pnlPct >= 0 ? "+" : ""}${i.pnlPct.toFixed(1)}%${i.pnlEth != null ? ` (${i.pnlEth >= 0 ? "+" : ""}${i.pnlEth.toFixed(6)}Ξ)` : ""}`
@@ -171,7 +180,7 @@ export async function notifyAutoClose(i: AutoCloseInfo): Promise<void> {
     [
       `${emo} <b>AUTO-CLOSE · ${label}</b> · ${tokenEmoji(i.sym)} <b>${esc(i.sym)}</b> #${i.tokenId} [${i.version}]`,
       `${i.realizedPnlUsd!=null?'Realized cash PnL':'PnL'}: <b>${pnl}${i.realizedPnlUsd!=null?` ($${i.realizedPnlUsd.toFixed(2)})`:''}</b>`,
-      i.realizedPnlUsd!=null?`Trigger estimate: ${i.estimatedPnlPct?.toFixed(2)??'?'}%. Session accounting: /auto status (separate from legacy LP-versus-HODL ledger).`:`<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
+      i.realizedPnlUsd!=null?`Final pre-close buffered estimate: ${i.estimatedPnlPct?.toFixed(2)??'?'}%. Settlement minus estimate: ${i.estimateDifferenceUsd==null?'unavailable':'$'+i.estimateDifferenceUsd.toFixed(2)}. Session accounting: /auto status (separate from legacy LP-versus-HODL ledger).`:`<i>closed automatically by auto-manage. Check /list · /ledger</i>`,
     ].join("\n"),
   );
 }

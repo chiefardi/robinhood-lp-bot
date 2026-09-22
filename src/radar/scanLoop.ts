@@ -7,10 +7,12 @@ import { cfg } from "../config.js";
 import { screenTokens, type ScreenResult } from "./screen.js";
 import { qualifyCandidate, type QualifiedPool } from "../chain/candidate.js";
 import { dexPairs, type DexPair } from "../chain/dexscreener.js";
-import { rankExactPoolCandidates, fastPoolScore } from "./fast-hunt.js";
+import { rankExactPoolCandidates, fastPoolScore,PoolActivityHistory,rankHuntDispatch } from "./fast-hunt.js";
+import {dataPath} from '../util/files.js';
 import { logger } from "../util/log.js";
 
 const log = logger("hunt");
+const activityHistory=new PoolActivityHistory(dataPath('hunt-activity.json'));
 
 export interface ScanHooks {
   onCandidate: (r: ScreenResult, pool: QualifiedPool, notify: boolean) => void | Promise<void>;
@@ -90,7 +92,7 @@ export function startScan(h?: ScanHooks): void {
   void tick();
   timer = setInterval(() => void tick(), cfg.scan.intervalMin * 60_000);
   log.info(
-    `hunt ON — every ${cfg.scan.intervalMin}m · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · score≥${cfg.scan.minScore}`,
+    `hunt ON — every ${cfg.scan.intervalMin}m · fee ${(cfg.scan.feeMinPpm / 10000).toFixed(0)}-${(cfg.scan.feeMaxPpm / 10000).toFixed(0)}% · vol≥$${cfg.scan.minVolUsd} · exact-pool activity screening`,
   );
 }
 
@@ -175,7 +177,8 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     }),
   }));
   if(systemicQualificationFailure(markets.length,marketErrors))throw new Error(`DexScreener lookup failed for ${marketErrors}/${markets.length} tokens`);
-  const ranked = rankExactPoolCandidates(eligible, new Map(markets.map(m => [m.address, m.pairs])), activity, Date.now());
+  for(const market of markets)for(const p of market.pairs.values())activityHistory.record(p,activity,Date.now());
+  const ranked = rankExactPoolCandidates(eligible, new Map(markets.map(m => [m.address, m.pairs])), activity, Date.now(),activityHistory);
   const cand = selectQualificationBatch(ranked.map(x=>({address:x.result.token.address,vol5m:x.vol5m??0,x})),qualificationChecked,now,activity.minVol5m,12);
   let qualificationErrors=0;
   const qualificationRejects:Record<string,number>={};
@@ -184,19 +187,19 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     const {result:r}=x;
     const pool = await qualifyCandidate(r.token.address, reasons=>{
       for(const [reason,count] of Object.entries(reasons))qualificationRejects[reason]=(qualificationRejects[reason]??0)+count;
-    }, 'usd', {...activity,now:Date.now()}).catch(e => {
+    }, 'usd', {...activity,now:Date.now(),coverage:poolId=>activityHistory.coverage(poolId,Date.now())}).catch(e => {
       qualificationErrors++;
       log.warn(`qualify ${r.token.symbol}: ${(e as Error).message.slice(0,90)}`);
       return null;
     });
     if (!pool) return null;
+    pool.activity=activityHistory.coverage(pool.v4.poolId,Date.now());
     const score = fastPoolScore(pool, activity, Date.now());
     return score == null ? null : { r: {...r, score, verdict:'ape' as const}, pool };
   });
   if(Object.keys(qualificationRejects).length)log.info(`qualification rejects: ${Object.entries(qualificationRejects).map(([reason,count])=>`${reason}=${count}`).join(', ')}`);
   if(systemicQualificationFailure(cand.length,qualificationErrors))throw new Error(`on-chain qualification failed for ${qualificationErrors}/${cand.length} sampled tokens`);
-  const chosen = qualified.filter((q):q is NonNullable<typeof q>=>q!==null)
-    .sort((a,b)=>(b.pool.vol5m??0)-(a.pool.vol5m??0));
+  const chosen = rankHuntDispatch(qualified.filter((q):q is NonNullable<typeof q>=>q!==null));
   // Tokens we ALREADY hold a position in — don't re-alert / risk a duplicate add (the operator asked:
   // "kalau udah ada posisi di token-nya, skip"). maybeAutoLp already dedupes the auto-add, but this also
   // silences the noisy repeat ALERT (and the manual "LP <token>" tap that would open a 2nd position).
@@ -224,7 +227,7 @@ async function performScan(): Promise<{ found: number; scanned: number }> {
     if (decision.notify) stats.alerts++;
     const mc = q.r.token.marketCap ?? 0;
     if (decision.notify) log.info(
-      `candidate ${q.r.token.symbol} · mcap $${(mc / 1e3).toFixed(0)}k · pool ${(q.pool.fee / 10000).toFixed(2)}% vol $${(q.pool.volUsd / 1e3).toFixed(1)}k fees $${q.pool.feesUsd.toFixed(0)} · spike ${q.pool.spikeX.toFixed(1)}x · score ${q.r.score}`,
+      `candidate ${q.r.token.symbol} · mcap $${(mc / 1e3).toFixed(0)}k · pool ${(q.pool.fee / 10000).toFixed(2)}% m5 $${q.pool.vol5m??'unknown'} h1 $${q.pool.volH1} · ${q.pool.activity?.reason??'history unknown'}`,
     );
     await hooks?.onCandidate(q.r, q.pool, decision.notify);
   });

@@ -86,9 +86,12 @@ const AutoLpSchema = z.object({
   sizeUsd: z.number().finite().positive().max(30).default(30),
   trailActivationPct: z.number().finite().nonnegative().default(0),
   trailGivebackPct: z.number().finite().positive().default(5),
+  timedTpMin: z.number().finite().nonnegative().default(0),
+  timedTpPct: z.number().finite().nonnegative().default(0),
+  maxHoldMin: z.number().finite().nonnegative().default(0),
   exitCostBufferUsd: z.number().finite().nonnegative().default(0.25),
   sizeEth: z.number().positive().default(0.001), // ETH per auto position
-  mode: z.enum(["single", "inrange"]).default("single"), // single = rug-safe
+  mode: z.enum(["single", "inrange", "asymmetric"]).default("single"), // asymmetric = -20/+10 USDG per token
   minScore: z.number().min(0).max(100).default(75), // radar LLM score floor
   requireAction: z.enum(["ape", "watch", "skip"]).default("ape"),
   requireLlm: z.boolean().default(true), // need an LLM verdict, not just GMGN
@@ -98,7 +101,7 @@ const AutoLpSchema = z.object({
   minLiqUsd: z.number().default(20000), // hard liquidity floor
   maxTaxPct: z.number().default(5), // hard tax ceiling (GMGN)
   maxOpen: z.number().int().default(3), // max concurrent LP positions total
-  maxPerHour: z.number().int().default(2), // rate limit
+  maxPerHour: z.number().int().nonnegative().default(0), // deprecated compatibility field; strict pilot has no hourly entry gate
   dailyCapEth: z.number().default(0.01), // max ETH auto-deployed per 24h
   sources: z.array(z.enum(["feed-new", "watch-spike", "hunt"])).default(["watch-spike", "hunt"]),
   // ── auto-CLOSE (manage loop, opt-in per trigger; 0/false = off) ──

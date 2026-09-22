@@ -7,13 +7,16 @@ import {ethers} from 'ethers';
 import sdkCore from '@uniswap/sdk-core';
 import sdkV4 from '@uniswap/v4-sdk';
 import * as guard from '../src/radar/entry-guard.ts';
+import * as asymmetric from '../src/chain/v4/asymmetric.ts';
 
 const USDG='0x5fc5360d0400a0fd4f2af552add042d716f1d168', TOKEN='0x6666666666666666666666666666666666666666',USER='0x2222222222222222222222222222222222222222', POSM='0x1111111111111111111111111111111111111111';
 const pk={currency0:USDG,currency1:TOKEN,fee:30000,tickSpacing:600,hooks:ethers.ZeroAddress};
 const poolId=ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(pk)));
 const pool={poolKey:pk,poolId,fee:30000,tickSpacing:600,liquidity:10n**18n,sqrtPriceX96:2n**96n,tick:0,lpFee:30000,quote:'usd'};
 
-function fixture(flag={}) {
+function fixture(flag={},poolInput=pool) {
+  const pool=poolInput;
+  const TOKEN=(pool.poolKey.currency0.toLowerCase()===USDG?pool.poolKey.currency1:pool.poolKey.currency0).toLowerCase();
   const originalToken=1000000000n, originalUsd=1000000000n;
   const holdings=new Map([[TOKEN,originalToken],[USDG,originalUsd]]);
   const calls={sends:[],swaps:[],amounts:[],approved:[]};
@@ -23,7 +26,7 @@ function fixture(flag={}) {
     async balanceOf(_owner,opts){if(flag.balanceFail)throw new Error('balance failure');if(flag.cachedAfterMint&&minted&&opts?.blockTag==null)return this.address===USDG?originalUsd:originalToken;return holdings.get(this.address)??0n;}
     async allowance(){return ethers.MaxUint256;}
     async approve(...args){calls.approved.push(args);return {hash:'0xapprove'};}
-    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return {sqrtPriceX96:pool.sqrtPriceX96,tick:0};}
+    async getSlot0(){if(flag.stateFail)throw new Error('state failure');return flag.moveAfterFunding?{sqrtPriceX96:BigInt(Math.floor(2**96*1.0001**300.25)),tick:600,lpFee:pool.lpFee}:{sqrtPriceX96:pool.sqrtPriceX96,tick:0,lpFee:pool.lpFee};}
     async getLiquidity(){return pool.liquidity;}
   }
   const P=sdkV4.Position;
@@ -38,30 +41,112 @@ function fixture(flag={}) {
       if(tx.hash==='0xmint'){
         if(flag.waitFail)throw new Error('timeout');
         minted=true;
-        holdings.set(USDG,holdings.get(USDG)-BigInt(position.amount0.quotient.toString()));
-        holdings.set(TOKEN,holdings.get(TOKEN)-BigInt(position.amount1.quotient.toString()));
+        holdings.set(pool.poolKey.currency0.toLowerCase(),holdings.get(pool.poolKey.currency0.toLowerCase())-BigInt(position.amount0.quotient.toString()));
+        holdings.set(pool.poolKey.currency1.toLowerCase(),holdings.get(pool.poolKey.currency1.toLowerCase())-BigInt(position.amount1.quotient.toString()));
       }
       return receipt;
     }},
     '../tokens.js':{tokenMeta:async a=>({symbol:a.toLowerCase()===USDG?'USDG':'TEST',decimals:6})},
     './discover.js':{USDG},'./swap.js':{},
-    '../kyber.js':{KYBER_NATIVE:ethers.ZeroAddress,kyberEnabled:()=>true,kyberSwap:async(input,output,amount)=>{
+    '../kyber.js':{KYBER_NATIVE:ethers.ZeroAddress,kyberEnabled:()=>true,kyberSwap:async(input,output,amount,strict)=>{
       calls.swaps.push({input,output,amount});
       if(minted && flag.sweepFail)throw new Error('sweep uncertain');
-      if(input===ethers.ZeroAddress){const raw=amount*2000n*10n**6n/10n**18n;holdings.set(output.toLowerCase(),holdings.get(output.toLowerCase())+raw);return {tx:'0xswap',amountOut:raw,blockNumber:41};}
+      if(input===ethers.ZeroAddress){const raw=amount*2000n*10n**6n/10n**18n;holdings.set(output.toLowerCase(),holdings.get(output.toLowerCase())+raw);strict?.receiptObserved?.(41);return {tx:'0xswap',amountOut:raw,blockNumber:41};}
+      if(flag.rollbackFail)throw Error('refund receipt unknown');
       holdings.set(input.toLowerCase(),holdings.get(input.toLowerCase())-amount);return {tx:'0xsweep',amountOut:1n,blockNumber:43};
     }},
     './poolkey.js':{NATIVE:ethers.ZeroAddress},'./abis.js':{STATEVIEW_ABI:[],V4_POSM_ABI:[]},'../blockscout.js':{},'../abis.js':{},
     '../price.js':{ethUsd:async()=>{throw new Error('strict must never read legacy price');}},
     '../../util/files.js':{dataPath:x=>x,readJson:()=>({}),writeJson:()=>{}},'../../util/log.js':{logger:()=>({info(){}})},
     '../../radar/entry-guard.js':guard,
+    './asymmetric.js':asymmetric,
   };
   const source=readFileSync(new URL('../src/chain/v4/mint.ts',import.meta.url),'utf8');
   const code=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const api={};vm.runInNewContext(code,{exports:api,require(name){assert.ok(Object.hasOwn(deps,name),name);return deps[name];},setTimeout,clearTimeout});
-  const strict={fixedEntryPrice:2000,sizeUsd:30,priceObservedAt:Date.now(),expectedPoolId:poolId,assertActive:()=>{if(flag.paused)throw new Error('paused');}};
+  const strict={fixedEntryPrice:2000,sizeUsd:30,priceObservedAt:Date.now(),expectedPoolId:pool.poolId,assertActive:()=>{if(flag.paused)throw new Error('paused');}};
   return {api,calls,holdings,originalToken,originalUsd,strict};
 }
+
+for(const fee of [10000,19000,20000,30000,50000,9999,50001])test(`strict asymmetric actual mint fee boundary ${fee}`,async()=>{
+ const key={...pk,fee};const p={...pool,poolKey:key,fee,lpFee:fee,poolId:ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(key)))};
+ const f=fixture({},p);
+ if(fee<10000||fee>50000){await assert.rejects(f.api.openV4UsdgInRange(p,'0.015',{strict:f.strict,asymmetric:true}),/invalid strict pool/);assert.equal(f.calls.swaps.length,0);assert.equal(f.calls.sends.length,0);}
+ else {const r=await f.api.openV4UsdgInRange(p,'0.015',{strict:f.strict,asymmetric:true});assert.equal(r.tokenId,'7');assert.equal(f.calls.sends.length,1);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);}
+});
+
+test('confirmed mint cleanup uses settlement permission rather than expired entry eligibility',async()=>{
+ const f=fixture();let cleanup=0;
+ f.strict.assertActive=()=>{if(f.calls.sends.length)throw Error('exact pool activity stale or missing');};
+ f.strict.assertCleanupActive=()=>{cleanup++;};
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tokenId,'7');assert(cleanup>0);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('known eligibility expiry after funding unwinds acquired assets without minting or sweeping old holdings',async()=>{
+ const f=fixture();f.strict.assertActive=()=>{if(f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress).length===2)throw new guard.EntryEligibilityError('activity expired');};
+ f.strict.assertCleanupActive=()=>{};f.strict.captureRollbackCash=async()=>({eth:.98,weth:0,blockNumber:41});
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>e instanceof guard.EntryRolledBackError&&e.blockNumber===43);
+ assert.equal(f.calls.sends.length,0);assert.equal(f.holdings.get(TOKEN),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('ambiguous mint receipt never triggers a funding rollback',async()=>{
+ const f=fixture({waitFail:true});f.strict.assertCleanupActive=()=>{};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),/timeout/);
+ assert.equal(f.calls.sends.length,1);assert.equal(f.calls.swaps.filter(s=>s.input!==ethers.ZeroAddress).length,0);
+});
+test('rollback cash boundary includes confirmed Permit2 approvals after the funding receipts',async()=>{
+ const f=fixture();let high=0;
+ f.strict.receiptObserved=n=>{high=Math.max(high,n);};
+ f.strict.assertActive=()=>{if(f.calls.approved.length===1)throw new guard.EntryEligibilityError('expired');};
+ f.strict.assertCleanupActive=()=>{};f.strict.captureRollbackCash=async()=>{assert.equal(high,42);return {eth:.98,weth:0,blockNumber:high};};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>e instanceof guard.EntryRolledBackError&&e.cashBeforeRollback.blockNumber===42);
+ assert.equal(f.calls.sends.length,0);
+});
+for(const stop of ['refund','operator'])test(`funding rollback ${stop} failure cannot report a successful recovery`,async()=>{
+ const f=fixture({rollbackFail:stop==='refund'});f.strict.assertActive=()=>{if(f.calls.swaps.length>=2)throw new guard.EntryEligibilityError('expired');};
+ f.strict.captureRollbackCash=async()=>({eth:.98,weth:0,blockNumber:41});f.strict.assertCleanupActive=()=>{if(stop==='operator')throw Error('operator stopped');};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),e=>!(e instanceof guard.EntryRolledBackError)&&/unknown|operator/.test(e.message));
+ assert.equal(f.calls.sends.length,0);
+});
+
+test('funded workflow refreshes eligibility before approvals and mint instead of reusing discovery timestamp',async()=>{
+ const f=fixture();let completed=false,refreshed=false;
+ f.strict.fundingComplete=()=>{completed=true;};f.strict.refreshActive=async()=>{if(completed)refreshed=true;};
+ f.strict.assertActive=()=>{if(completed&&!refreshed)throw Error('stale after funding');};
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tokenId,'7');assert.equal(completed,true);assert.equal(refreshed,true);
+});
+test('confirmed mint cleanup still honors explicit settlement stop',async()=>{
+ const f=fixture();f.strict.assertCleanupActive=()=>{throw Error('settlement stopped');};
+ await assert.rejects(f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true}),/settlement stopped/);
+ assert.equal(f.calls.sends.length,1);
+});
+
+test('asymmetric mint buys the tick-derived token share and reanchors -20/+10 after funding',async()=>{
+ const f=fixture({moveAfterFunding:true});
+ const r=await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tickLower,-600);assert.equal(r.tickUpper,3000);
+ const buys=f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress);
+ assert.equal(buys.length,2);
+ assert(buys.find(s=>s.output.toLowerCase()===TOKEN).amount<7500000000000000n);
+ assert.equal(buys.reduce((n,s)=>n+s.amount,0n),15000000000000000n);
+ assert.equal(r.mode,'asymmetric');
+ assert.equal(f.holdings.get(TOKEN),f.originalToken);
+ assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
+
+test('asymmetric mint also stays USDG-heavy when token is currency0',async()=>{
+ const token='0x4444444444444444444444444444444444444444';
+ const key={...pk,currency0:token,currency1:USDG};
+ const reverse={...pool,poolKey:key,poolId:ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(['address','address','uint24','int24','address'],Object.values(key)))};
+ const f=fixture({moveAfterFunding:true},reverse);
+ const r=await f.api.openV4UsdgInRange(reverse,'0.015',{strict:f.strict,asymmetric:true});
+ assert.equal(r.tickLower,-1800);assert.equal(r.tickUpper,1800);
+ const buys=f.calls.swaps.filter(s=>s.input===ethers.ZeroAddress);
+ assert(buys.find(s=>s.output.toLowerCase()===token).amount<7500000000000000n);
+ assert.equal(f.holdings.get(token),f.originalToken);assert.equal(f.holdings.get(USDG),f.originalUsd);
+});
 
 test('strict inrange mint caps whole-wallet funds and leaves all preheld tokens untouched',async()=>{
   const f=fixture();await f.api.openV4UsdgInRange(pool,'0.015',{strict:f.strict,widthSpacings:8});
